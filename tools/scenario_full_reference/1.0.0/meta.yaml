@@ -1,0 +1,41 @@
+name: scenario_full_reference
+version: 1.0.0
+summary: KooChainRun scenario.json 전체 옵션 reference (Tier 2 고급 옵션 — 필요시에만 호출).
+description: |
+  single_drop_simulation / fullangle_drop_simulation의 `extra_scenario_overrides`에 넣을 수 있는
+  **모든 KooChainRun 옵션의 완전 schema**를 반환합니다.
+
+  # 언제 호출하는가
+  - **평소엔 호출 X**. Tier 1 옵션 (drop_surface_type, num_angles, ncpu 등)으로 충분.
+  - "tolerance DOE 적용하고 싶어", "RigidWall 안에 size 바꾸고 싶어", "batch_koomeshmodifier 켜고 싶어"
+  - LLM이 Tier 2 옵션이 필요한데 schema를 모를 때
+
+  # 동작
+  KooChainRun이 인식하는 모든 scenario.json 키 + 각 키의 의미 + 예제 JSON snippet 반환.
+
+  # 사용 패턴
+  1. 이 tool 호출 → 전체 옵션 schema 받음
+  2. 그 schema 참고하여 `extra_scenario_overrides` 객체 구성
+  3. single_drop_simulation / fullangle_drop_simulation 호출 시 `extra_scenario_overrides` 인자로 전달
+  4. scenario_builder가 deep-merge로 base scenario에 적용
+
+  # 반환
+  ```json
+  {
+    "ok": true,
+    "section_filter": "all" | "scenarios" | "environment" | ...,
+    "schema": { ... 전체 KooChainRun 옵션 schema ... },
+    "examples": [ ... 자주 쓰는 패턴 ... ]
+  }
+  ```
+tags: [reference, schema, advanced, scenario, koochainrun, tier2]
+aliases: [scenario_schema, koochainrun_options, advanced_options]
+transport: {kind: local, shell: /bin/bash, timeout_sec: 5}
+expose: catalog   # 일부러 direct 안 함 — 평소엔 catalog_search로만 발견되게
+examples:
+  - title: 전체 schema
+    args: {}
+  - title: tolerance(DOE) 섹션만
+    args: {section: tolerance}
+  - title: postprocess 섹션만
+    args: {section: postprocess}

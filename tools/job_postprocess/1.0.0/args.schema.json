@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [{"required": ["registry_id"]}, {"required": ["work_dir"]}],
+  "properties": {
+    "registry_id": {"type": "integer", "minimum": 1},
+    "work_dir": {"type": "string", "pattern": "^/.+"},
+    "mode": {
+      "type": "string",
+      "enum": ["all", "deep", "sphere"],
+      "default": "all"
+    }
+  }
+}

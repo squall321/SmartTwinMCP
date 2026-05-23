@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "submit_lsdyna_job args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["k_file", "lstc_license_ip"],
+  "properties": {
+    "k_file": {
+      "type": "string",
+      "pattern": "^/.+\\.k$",
+      "description": "Absolute path to LS-DYNA .k input file. Output (d3plot) lands in its parent directory."
+    },
+    "lstc_license_ip": {"type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"},
+    "ncpu": {"type": "integer", "default": 1, "minimum": 1, "maximum": 64},
+    "memory": {"type": "string", "default": "2G", "pattern": "^[0-9]+[GM]$"},
+    "time_limit": {"type": "string", "default": "01:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+    "lsdyna_memory_words": {
+      "type": "string",
+      "default": "2000m",
+      "description": "LS-DYNA internal 'memory=' setting (m suffix)."
+    },
+    "partition": {"type": "string"},
+    "job_name": {"type": "string"},
+    "lsdyna_sif": {
+      "type": "string",
+      "default": "/opt/apptainers/LSDynaBasic_aocc420_ompi4.0.5_mpp_s.sif",
+      "description": "Absolute path to LS-DYNA Apptainer SIF on compute nodes."
+    },
+    "dry_run": {"type": "boolean", "default": false}
+  }
+}

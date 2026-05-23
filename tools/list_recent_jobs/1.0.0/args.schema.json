@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_recent_jobs args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 500},
+    "status": {
+      "type": "string",
+      "enum": ["submitted", "running", "completed", "failed", "cancelled", "dry_run"]
+    },
+    "tool": {
+      "type": "string",
+      "enum": ["single_drop_simulation", "fullangle_drop_simulation", "submit_lsdyna_job"]
+    },
+    "since_hours_ago": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Filter to jobs submitted within the last N hours."
+    },
+    "project_like": {
+      "type": "string",
+      "description": "SQL LIKE pattern on project_name. Use % wildcards."
+    },
+    "only_mine": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true, restrict to jobs submitted by current $USER."
+    }
+  }
+}

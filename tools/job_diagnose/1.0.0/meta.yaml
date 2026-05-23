@@ -1,0 +1,13 @@
+name: job_diagnose
+version: 1.0.0
+summary: 실패 DOE 원인 진단 (KooChainRun diagnose) — LS-DYNA log 분석.
+description: |
+  레지스트리에서 잡 찾아서 KooChainRun diagnose 호출. fail한 시뮬의 mes0000/d3hsp 로그
+  분석해서 원인 카테고리화(license/memory/contact/timestep/...).
+tags: [diagnose, debug, failure, analysis]
+aliases: [diagnose, why_failed, debug_job]
+transport: {kind: local, shell: /bin/bash, timeout_sec: 60}
+expose: direct
+examples:
+  - title: registry_id
+    args: {registry_id: 42}

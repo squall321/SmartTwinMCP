@@ -1,0 +1,52 @@
+name: list_recent_jobs
+version: 1.0.0
+summary: 최근 제출한 LS-DYNA / KooChainRun 잡 목록 조회 (세션 영속, SQLite).
+description: |
+  /data/SmartTwinMCP/jobs.db에 기록된 잡 목록을 페이지네이션 + 필터링해서 반환합니다.
+  **챗봇 세션이 끊겨도, 이전에 제출한 잡을 다시 찾을 수 있습니다.**
+
+  # 언제 호출하는가
+  - "내가 어제 던진 잡 어떻게 됐어?", "최근 잡들 보여줘"
+  - 새 세션 시작 후 이전 작업 컨텍스트 복구
+  - 실패한 잡만 보기 (status='failed' 필터)
+  - 특정 프로젝트의 모든 잡 찾기
+
+  # 동작
+  SQLite SELECT + 페이지네이션. default 20개. 필터들 ANDed.
+
+  # 반환
+  ```json
+  {
+    "ok": true,
+    "total_returned": 20,
+    "jobs": [
+      {
+        "id": 42, "tool_name": "fullangle_drop_simulation",
+        "submitted_at": 1716..., "submitted_at_human": "2026-05-22 14:30",
+        "project_name": "...", "work_dir": "...", "output_dir": "...",
+        "slurm_job_ids": ["100","101",...], "num_angles": 162,
+        "status": "submitted", ...
+      }
+    ]
+  }
+  ```
+
+  # 다음 단계
+  - registry_id를 get_job_details에 넘기면 풀 상세 (sphere job, notes 등)
+  - work_dir를 job_status/job_stop/job_rerun에 넘기면 실시간 상태/제어
+tags: [registry, list, history, jobs, search]
+aliases: [recent_jobs, list_jobs, my_jobs, job_history]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: direct
+examples:
+  - title: 최근 20개 (default)
+    args: {}
+  - title: 실행 중인 잡만
+    args: {status: submitted, limit: 50}
+  - title: 어제 던진 fullangle 잡
+    args: {tool: fullangle_drop_simulation, since_hours_ago: 24}
+  - title: project_name으로 검색
+    args: {project_like: "%drop%"}

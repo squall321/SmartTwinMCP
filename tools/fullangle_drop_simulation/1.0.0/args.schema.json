@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fullangle_drop_simulation args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["work_dir", "lstc_license_ip"],
+  "properties": {
+    "work_dir": {"type": "string", "pattern": "^/.+"},
+    "model_file": {"type": "string", "default": "MinimumModel.k"},
+    "model_file_path": {"type": "string", "pattern": "^/.+\\.k$"},
+    "lstc_license_ip": {"type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"},
+    "num_angles": {
+      "type": "integer",
+      "default": 162,
+      "minimum": 1,
+      "maximum": 10000,
+      "description": "Fibonacci lattice 방향 수. 표준=162, 빠른 검증=5~50."
+    },
+    "drop_height_mm": {"type": "number", "default": 1500, "minimum": 1, "maximum": 50000},
+    "simulation_time_s": {"type": "number", "default": 0.005, "minimum": 1e-06, "maximum": 10},
+    "ncpu": {"type": "integer", "default": 2, "minimum": 1, "maximum": 64},
+    "memory": {"type": "string", "default": "4G", "pattern": "^[0-9]+[GM]$"},
+    "time_limit": {"type": "string", "default": "12:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+    "enable_postprocess": {
+      "type": "boolean",
+      "default": true,
+      "description": "KooD3plotReader 자동 후처리 마스터 토글."
+    },
+    "auto_deep": {
+      "type": "boolean",
+      "default": true,
+      "description": "enable_postprocess=true 시 deep_report 자동 실행 (각 시뮬마다)."
+    },
+    "auto_sphere": {
+      "type": "boolean",
+      "default": true,
+      "description": "enable_postprocess=true 시 sphere_report dependent job 자동 제출 (모든 시뮬 끝난 후)."
+    },
+    "auto_deep_mode": {
+      "type": "string",
+      "enum": ["inline", "separate_job"],
+      "default": "inline",
+      "description": "inline=시뮬+deep 같은 Slurm Job. separate_job=시뮬 노드 즉시 해방, deep을 별도 잡으로."
+    },
+    "yield_stress_mpa": {"type": "number", "default": 350, "minimum": 1},
+    "drop_surface_type": {
+      "type": "string",
+      "enum": ["Plane", "PlaneGraded", "RigidWall", "PlanewithRoughness"],
+      "default": "Plane"
+    },
+    "sif_path_postprocessor": {
+      "type": "string",
+      "pattern": "^/.+\\.sif$",
+      "description": "후처리 SIF 절대경로. default는 compute node /opt/apptainers/SmartTwinPostprocessor.sif."
+    },
+    "project_name": {"type": "string"},
+    "extra_scenario_overrides": {
+      "type": "object",
+      "description": "Tier 2 고급 옵션. scenario_full_reference tool에서 가능한 키 확인 가능. 예: {\"postprocess\":{\"sphere_memory\":\"32G\",\"section_view_axes\":[\"x\",\"y\",\"z\"]}, \"scenarios\":[{\"tolerance\":{\"doe_type\":\"lhs\",\"doe_count\":50}}]}",
+      "additionalProperties": true
+    },
+    "dry_run": {"type": "boolean", "default": false}
+  }
+}

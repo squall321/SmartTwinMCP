@@ -1,0 +1,25 @@
+name: get_job_details
+version: 1.0.0
+summary: 특정 잡(registry_id 또는 work_dir 기반) 상세 정보 + 파일 존재 여부.
+description: |
+  레지스트리에서 잡 1개 fetch + 실제 디스크 상태 (scenario.json/runner_config.json/
+  sphere_report.html 존재 여부) 함께 반환.
+
+  # 언제 호출하는가
+  - list_recent_jobs에서 본 후 "이 잡 자세히 봐줘"
+  - 후속 작업(stop/rerun/postprocess) 호출 전 work_dir/output_dir 확인
+
+  # 인자: registry_id 또는 work_dir 중 하나
+  - id 우선. work_dir 주면 LIKE 매칭 (가장 최근 1개).
+tags: [registry, details, jobs]
+aliases: [job_details, get_job, job_info]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: direct
+examples:
+  - title: registry_id로 조회
+    args: {registry_id: 42}
+  - title: work_dir로 조회
+    args: {work_dir: /data/koopark/fullangle_test}

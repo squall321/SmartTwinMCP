@@ -1,0 +1,19 @@
+name: echo
+version: 1.0.0
+summary: Echo the given message back. Smoke test for the catalog.
+description: |
+  A trivial diagnostic tool. Use it to confirm the MCP server can find, validate,
+  and execute tools end-to-end. The script reads args from $STMC_ARGS_JSON and
+  prints a JSON envelope.
+tags: [diagnostic, smoke-test]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: direct
+examples:
+  - title: simple message
+    args: { message: "hello" }
+  - title: with extra count
+    args: { message: "ping", count: 3 }
+    note: count is optional; defaults to 1.

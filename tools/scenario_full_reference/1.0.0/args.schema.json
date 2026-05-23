@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "section": {
+      "type": "string",
+      "enum": ["all", "environment", "simulation_params", "scenarios", "angle_source", "cumulative", "tolerance", "postprocess"],
+      "default": "all",
+      "description": "특정 섹션만 조회하면 응답 크기 절약."
+    }
+  }
+}

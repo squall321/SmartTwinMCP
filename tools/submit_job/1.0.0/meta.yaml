@@ -1,0 +1,40 @@
+name: submit_job
+version: 1.0.0
+summary: Submit a simulation job to SmartTwinCluster.
+description: |
+  Submits a compute job to SmartTwinCluster.
+
+  # When to call
+  Use this when the user asks to "run", "submit", "launch", or "queue" a
+  simulation, a solver run, or a batch case. Do NOT use this for status checks
+  (use `job_status`) or cancellation (use `cancel_job`).
+
+  # Required mental model for the LLM
+  - `case_dir` is the absolute path to a prepared case directory on shared storage.
+  - `solver` picks the runner inside the container; ask the user if missing.
+  - `partition` and `gpus` map to cluster resources. Sensible defaults exist.
+  - `wall_time` is HH:MM:SS. Leave unset for the partition default.
+
+  # Output
+  Returns a JSON object with `job_id`, `partition`, `submitted_at`. The job_id
+  is what every other tool (status, cancel, logs) expects.
+tags: [job, submit, slurm, cluster, simulation]
+aliases: [run_job, launch]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 30
+expose: direct
+examples:
+  - title: minimal submit
+    args:
+      case_dir: /data/cases/case_42
+      solver: smarttwin-dyna
+  - title: with partition + gpus
+    args:
+      case_dir: /data/cases/case_42
+      solver: smarttwin-dyna
+      partition: gpu-a100
+      gpus: 2
+      wall_time: "04:00:00"
+    note: GPU partitions require gpus >= 1.

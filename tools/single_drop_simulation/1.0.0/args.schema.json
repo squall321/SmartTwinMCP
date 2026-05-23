@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "single_drop_simulation args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["work_dir", "lstc_license_ip"],
+  "properties": {
+    "work_dir": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute path to working directory. Created if missing. scenario.json/output/ will live here."
+    },
+    "model_file": {
+      "type": "string",
+      "default": "MinimumModel.k",
+      "description": "LS-DYNA .k filename inside work_dir. If file missing, model_file_path must be set."
+    },
+    "model_file_path": {
+      "type": "string",
+      "pattern": "^/.+\\.k$",
+      "description": "Optional absolute path to copy .k file from (if not already in work_dir)."
+    },
+    "lstc_license_ip": {
+      "type": "string",
+      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+      "description": "LSTC license server IP reachable from compute nodes."
+    },
+    "roll_deg": {"type": "number", "default": 0, "minimum": -180, "maximum": 180},
+    "pitch_deg": {"type": "number", "default": 0, "minimum": -180, "maximum": 180},
+    "yaw_deg": {"type": "number", "default": 0, "minimum": -180, "maximum": 180},
+    "drop_height_mm": {"type": "number", "default": 1500, "minimum": 1, "maximum": 50000},
+    "simulation_time_s": {"type": "number", "default": 0.005, "minimum": 1e-06, "maximum": 10},
+    "ncpu": {"type": "integer", "default": 1, "minimum": 1, "maximum": 64},
+    "memory": {"type": "string", "default": "2G", "pattern": "^[0-9]+[GM]$"},
+    "time_limit": {"type": "string", "default": "01:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+    "project_name": {
+      "type": "string",
+      "description": "Optional project label (default derived from angles)."
+    },
+    "drop_surface_type": {
+      "type": "string",
+      "enum": ["Plane", "PlaneGraded", "RigidWall", "PlanewithRoughness"],
+      "default": "Plane",
+      "description": "Drop surface type. Plane=균일 평판, PlaneGraded=외곽 graded, RigidWall=강체 벽(가장 단순/빠름), PlanewithRoughness=거칠기 포함."
+    },
+    "extra_scenario_overrides": {
+      "type": "object",
+      "description": "Tier 2 고급 옵션을 직접 scenario.json에 deep-merge 적용. 어떤 옵션이 가능한지 모르면 scenario_full_reference tool 호출. 예: {\"scenarios\":[{\"batch_koomeshmodifier\":true}], \"environment\":{\"timeout_per_step_seconds\":86400}}",
+      "additionalProperties": true
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false,
+      "description": "True = generate scenario.json + runner_config.json only, do NOT submit Slurm. Records as status='dry_run' in registry."
+    }
+  }
+}

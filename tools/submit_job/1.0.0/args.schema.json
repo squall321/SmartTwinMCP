@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "submit_job args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_dir", "solver"],
+  "properties": {
+    "case_dir": {
+      "type": "string",
+      "description": "Absolute path to the prepared case directory.",
+      "pattern": "^/.+"
+    },
+    "solver": {
+      "type": "string",
+      "enum": ["smarttwin-dyna", "openradioss", "calculix", "abaqus"],
+      "description": "Solver binary to run inside the cluster container."
+    },
+    "partition": {
+      "type": "string",
+      "description": "Slurm partition. Omit to use the cluster default.",
+      "enum": ["cpu", "cpu-large", "gpu-a100", "gpu-h100"]
+    },
+    "gpus": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8,
+      "default": 0,
+      "description": "Number of GPUs. Must be >= 1 on a GPU partition."
+    },
+    "cpus": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256,
+      "default": 8
+    },
+    "memory_gb": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2048,
+      "default": 32
+    },
+    "wall_time": {
+      "type": "string",
+      "pattern": "^([0-9]{1,3}):[0-5][0-9]:[0-5][0-9]$",
+      "description": "Wall-clock limit, HH:MM:SS. Omit for partition default."
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional labels for tracking/searching the run."
+    }
+  }
+}

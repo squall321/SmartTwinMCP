@@ -1,0 +1,60 @@
+name: submit_lsdyna_job
+version: 1.0.0
+summary: Raw LS-DYNA .k 파일 1개를 Slurm sbatch로 직접 제출 (KooChainRun 우회).
+description: |
+  이미 모든 카드(*INITIAL_VELOCITY, *BOUNDARY 등)가 다 들어있는 raw LS-DYNA 입력 파일(.k)을
+  Slurm에 sbatch로 던집니다. KooChainRun(낙하 자동화)을 거치지 않고 lsdyna에 바로 입력.
+
+  # 언제 호출하는가
+  - 사용자가 직접 작성/수정한 .k 파일을 그대로 돌리고 싶을 때
+  - 낙하가 아닌 일반 시뮬 (충돌/벤딩/탄성/...)
+  - 외부에서 받은 .k 검증
+
+  # 다른 tool과 구분
+  - 낙하 시나리오 (KooChainRun이 회전/initial_velocity 자동 추가) → single_drop_simulation / fullangle_drop_simulation
+
+  # 사전 조건
+  - .k 파일 절대경로 (work_dir 안에 있어야 결과도 같이 모임)
+  - compute node에 LSDynaBasic SIF 존재
+
+  # 동작
+  1. sbatch 스크립트 생성 (apptainer exec mpirun lsdyna i=<k_file>)
+  2. dry_run=true면 스크립트만 출력, 제출 안 함
+  3. sbatch 제출 → Slurm Job ID
+  4. 레지스트리 기록
+
+  # 반환
+  ```json
+  {
+    "ok": true,
+    "registry_id": 42,
+    "tool": "submit_lsdyna_job",
+    "work_dir": ".../",
+    "output_dir": ".../",            # raw 잡은 work_dir 자체가 output_dir
+    "k_file": "/data/.../my.k",
+    "sbatch_path": ".../job.sbatch",
+    "slurm_job_ids": ["123"],
+    "status": "submitted" | "dry_run"
+  }
+  ```
+tags: [lsdyna, simulation, slurm, sbatch, raw, kfile]
+aliases: [submit_kfile, raw_lsdyna, sbatch_lsdyna]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 60
+expose: direct
+examples:
+  - title: 기본 dry_run
+    args:
+      k_file: /data/koopark/myjob/input.k
+      lstc_license_ip: 192.168.122.1
+      dry_run: true
+  - title: 큰 모델 실제 제출
+    args:
+      k_file: /data/koopark/crash/full_crash.k
+      lstc_license_ip: 192.168.122.1
+      ncpu: 8
+      memory: 16G
+      time_limit: "24:00:00"
+      dry_run: false
