@@ -168,6 +168,11 @@ one minimal call and one with most options set. Examples cost nothing to write a
 dramatically improve weak-LLM call accuracy. Examples must validate against
 `args.schema.json` (CI/lint will check this — see §7).
 
+**Exception for zero-arg tools.** If your tool's schema has no properties (or all
+properties are optional and the LLM never needs to vary them — e.g. a health
+check), one `args: {}` example is enough. Don't add a duplicate "second" example
+that carries no information.
+
 ```yaml
 examples:
   - title: minimal call
@@ -515,14 +520,55 @@ test -x tools/my_tool/1.0.0/script.sh && echo 'exec bit OK'
 # 5. latest symlink exists and points somewhere real
 test -L tools/my_tool/latest && readlink tools/my_tool/latest
 
-# 6. End-to-end run with a dry-run / minimal input
+# 6. End-to-end run — TRANSPORT-DEPENDENT
+#
+# 6a. transport: local
 STMC_ARGS_JSON='{"...minimal valid args..."}' bash tools/my_tool/1.0.0/script.sh | python3 -m json.tool
+#
+# 6b. transport: ssh
+# Same env trick, but run through the runner instead of `bash` directly:
+.venv/bin/python -c "
+from pathlib import Path
+from smarttwin_mcp.catalog import load_catalog
+from smarttwin_mcp.runner import run
+e = load_catalog(Path('./tools').resolve()).resolve('my_tool')
+print(run(e, { '...minimal valid args...': '' }).to_dict())
+"
+#
+# 6c. transport: http
+# script.sh is a no-op (§15.7); test the actual HTTP path through the runner.
+# Prove env interpolation works by trying BOTH (env unset → ok=false, missing env;
+# env set to a fake host → ok=false, urlopen error proves URL was rendered).
+unset STMC_CLUSTER_URL STMC_CLUSTER_TOKEN
+.venv/bin/python -c "
+from pathlib import Path
+from smarttwin_mcp.catalog import load_catalog
+from smarttwin_mcp.runner import run
+e = load_catalog(Path('./tools').resolve()).resolve('my_tool')
+r = run(e, {})
+assert r.ok is False and 'missing env' in r.stderr, r
+print('unset env OK')
+"
+STMC_CLUSTER_URL=http://127.0.0.1:1 STMC_CLUSTER_TOKEN=xxx .venv/bin/python -c "
+from pathlib import Path
+from smarttwin_mcp.catalog import load_catalog
+from smarttwin_mcp.runner import run
+e = load_catalog(Path('./tools').resolve()).resolve('my_tool')
+r = run(e, {})
+assert r.ok is False and ('Connection refused' in r.stderr or 'URLError' in r.stderr), r
+print('fake env OK')
+"
 
 # 7. Existing tests still pass
 .venv/bin/pytest tests/ -q
 ```
 
 If any of these fail, **do not commit**. Fix first.
+
+> **Prerequisite for steps 1, 2, 3, 6:** the venv must have `smarttwin-mcp`
+> installed editable (`.venv/bin/pip install -e .` from repo root). The snippets
+> import from `smarttwin_mcp.catalog` and `smarttwin_mcp.runner` which only
+> resolve once the package is on the venv path.
 
 ---
 
@@ -536,6 +582,23 @@ If any of these fail, **do not commit**. Fix first.
   aliases or which version is `latest`.
 - Don't pick aliases that look like another tool's primary name. Future-you will get
   confused. Bad: alias `submit` (too generic). Good: alias `sbatch_lsdyna`.
+
+**Check existing names + aliases before picking yours.** Run this from the repo
+root before committing a new tool:
+
+```bash
+.venv/bin/python -c "
+from pathlib import Path
+from smarttwin_mcp.catalog import load_catalog
+c = load_catalog(Path('./tools').resolve())
+taken = set(c.latest_by_name) | set(c.aliases)
+for n in sorted(taken): print(n)
+"
+```
+
+The collision check is also enforced at load time — duplicate aliases get
+silently dropped and logged as a `CatalogIssue`, which §7 step 1 catches. But
+catching it locally before you commit is friendlier than discovering it after.
 
 ---
 
@@ -901,3 +964,301 @@ PY
   [spec.py](../src/smarttwin_mcp/spec.py) and this guide together in one PR.
 - **Don't break the JSON stdout contract.** Everything downstream depends on it.
 - **Keep `expose: catalog` unless you can defend a different choice in code review.**
+
+---
+
+## 14. GPU jobs (Slurm conventions)
+
+LS-DYNA MPP in this catalog is CPU-only. GPU support here means **tools that submit
+GPU jobs to Slurm** (PyTorch / JAX training, CUDA solvers, postprocessing on GPU
+nodes, etc.). The conventions below are **for new tools** that target GPU
+partitions. Do not retrofit existing CPU tools.
+
+### 14.1 Required args for GPU-aware tools
+
+If your tool can run on a GPU partition, accept these three args (others are
+tool-specific):
+
+```json
+{
+  "gpus": {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 8,
+    "default": 0,
+    "description": "Number of GPUs to request. 0 = CPU-only (default). Must be >= 1 on a GPU partition."
+  },
+  "gpu_type": {
+    "type": "string",
+    "enum": ["a100", "h100", "rtx4090", "any"],
+    "default": "any",
+    "description": "GPU model selector. Maps to Slurm --gres=gpu:<type>:N. Use 'any' to skip the type filter."
+  },
+  "gpu_partition": {
+    "type": "string",
+    "enum": ["gpu-a100", "gpu-h100", "gpu-mixed"],
+    "description": "Slurm partition. Required when gpus >= 1. Omit on CPU-only runs."
+  }
+}
+```
+
+Cross-validate in `script.sh`, not in JSON Schema (JSON Schema can't express
+"`gpu_partition` required iff `gpus >= 1`"):
+
+```python
+gpus = int(args.get("gpus", 0))
+if gpus >= 1 and not args.get("gpu_partition"):
+    job_helpers.fail("gpu_partition is required when gpus >= 1", got=args)
+if gpus == 0 and args.get("gpu_partition", "").startswith("gpu-"):
+    job_helpers.fail("gpu_partition set but gpus=0 — pass gpus >= 1 or drop the partition", got=args)
+```
+
+**Two flavors of GPU-aware tool:**
+
+- **Purpose-built GPU tool** (the common case — PyTorch training, CUDA solver,
+  GPU postprocessing): the tool literally cannot run without a GPU. **Reject
+  `gpus=0` outright** at the top of `script.sh` with `job_helpers.fail("this tool
+  requires gpus >= 1; see §14.1", ...)`. Don't try to provide a CPU fallback.
+- **Multipurpose tool** (rare — a generic launcher that runs the same script on
+  CPU or GPU): accept `gpus=0` and fall back to a CPU partition. Document this
+  fork in the tool's `description` so the LLM knows the dual mode exists.
+
+Pick one mode; don't be silent. If you choose purpose-built, you can leave
+`default: 0` in the schema (so calling with no args doesn't accidentally request
+GPUs) and rely on the script's `fail()` to teach the user.
+
+### 14.2 sbatch directives — the canonical GPU snippet
+
+This snippet assumes you've already passed the §14.1 cross-validation and `gpus >= 1`
+with a valid `gpu_partition`. Do not render these lines on the `gpus=0` path.
+
+```bash
+#SBATCH --partition={gpu_partition}
+#SBATCH --gres=gpu:{gres_spec}              # gres_spec = "<gpu_type>:<N>" or "<N>" if gpu_type=="any"
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={cpus_per_gpu_x_gpus}   # default: 8 * gpus
+#SBATCH --mem={memory}                       # default: 32G * gpus
+#SBATCH --time={time_limit}
+```
+
+Build `gres_spec` from `gpu_type` + `gpus`:
+
+```python
+gres_spec = f"{gpus}" if gpu_type == "any" else f"{gpu_type}:{gpus}"
+```
+
+**Defaults rule of thumb (override only if the user asks):**
+
+| Resource per GPU         | Default       |
+|--------------------------|---------------|
+| `--cpus-per-task`        | 8             |
+| `--mem`                  | 32G           |
+| `--time`                 | 04:00:00      |
+
+Multiply by `gpus` when building the sbatch script — the defaults above scale
+linearly. Since §14.1 guarantees `gpus >= 1` on this code path, the multiplication
+is always safe (no zero-cpu allocations). Print the resolved values in your tool's
+JSON response so users see what was actually requested.
+
+### 14.3 Environment variables inside the sbatch script
+
+Inside the apptainer/singularity exec (or bare process) for GPU workloads:
+
+```bash
+--env NVIDIA_VISIBLE_DEVICES=all      # apptainer-side; Slurm sets CUDA_VISIBLE_DEVICES per allocation
+--env CUDA_DEVICE_ORDER=PCI_BUS_ID
+--nv                                   # apptainer flag — exposes nvidia-smi + libs into the container
+```
+
+For multi-GPU training, set:
+
+```bash
+--env NCCL_DEBUG=WARN
+--env NCCL_SOCKET_IFNAME=^docker0,lo   # avoid loopback/docker bridges
+```
+
+Do **not** export `CUDA_VISIBLE_DEVICES` yourself — Slurm sets it correctly based
+on `--gres`. Overriding it breaks multi-GPU scheduling.
+
+### 14.4 Registry fields for GPU jobs
+
+`registry.record_submission` doesn't have GPU-specific columns. Put the GPU spec
+in the `extra` JSON blob so downstream tools (`job_status`, `job_logs`) can show
+it:
+
+```python
+registry.record_submission(
+    ...,
+    extra={
+        "gpus": gpus,
+        "gpu_type": gpu_type,
+        "gpu_partition": gpu_partition,
+        # ...plus any tool-specific keys (framework, model name, dataset path...)
+    },
+)
+```
+
+Add tool-specific keys (framework, model name, dataset path, ...) only if a
+downstream tool will actually read them. Don't speculatively stuff fields.
+
+### 14.5 Anti-patterns specific to GPU tools
+
+| Don't                                                  | Why                                                                 |
+|--------------------------------------------------------|---------------------------------------------------------------------|
+| Default `gpus: 1`                                      | Forces every caller into the GPU queue. CPU-only is safer default.  |
+| Hard-code a specific GPU node (`#SBATCH --nodelist=`)  | Schedules around the partition; defeats Slurm's load balancing.     |
+| `export CUDA_VISIBLE_DEVICES=0,1,2,3` in your script   | Overrides Slurm's per-task masking, breaks multi-job GPU isolation. |
+| Skip `--gres=gpu:N` and rely on partition default      | Some partitions allow CPU-only jobs and won't allocate any GPU.     |
+| Ignore `apptainer --nv`                                | Container can't see GPUs; CUDA init fails inside the image.         |
+
+---
+
+## 15. REST API tools (`transport: http`)
+
+For tools that call an external HTTP API instead of running a script — e.g.
+cluster control-plane endpoints, monitoring dashboards, third-party services.
+The runner ([runner.py](../src/smarttwin_mcp/runner.py)) handles HTTP transport;
+your `meta.yaml` is the entire contract.
+
+### 15.1 When to use `http` vs `local` with `curl`
+
+- **`transport: http`**: the request is fully described by URL + headers + JSON
+  body. No domain logic needed before/after. Examples: GET `/health`, POST
+  `/jobs/<id>/cancel`, simple webhook fires. Use this — it's declarative,
+  testable, and the runner gives you env-var interpolation and timeouts for free.
+- **`transport: local` calling `curl`**: needed when the request requires
+  pre-processing (e.g. constructing the URL from a registry lookup), looping
+  over a paginated API, OR post-processing the response into a registry row.
+  In other words: when there's domain logic. Don't shoehorn complex flows into
+  `body_template`.
+
+If you find yourself wanting conditionals in `body_template`, switch to `local`.
+
+### 15.2 `meta.yaml` for an HTTP tool
+
+```yaml
+name: get_cluster_health
+version: 1.0.0
+summary: Hit the SmartTwinCluster /health endpoint and return raw JSON.
+description: |
+  Returns the cluster control-plane health snapshot. No registry interaction.
+
+  # When to call this
+  - User asks "is the cluster up?", "how busy is the cluster?", or similar
+  - Pre-flight before submitting a large batch
+tags: [http, cluster, health, monitoring]
+expose: catalog
+transport:
+  kind: http
+  method: GET
+  url: ${STMC_CLUSTER_URL}/v1/health
+  headers:
+    Authorization: "Bearer ${STMC_CLUSTER_TOKEN}"
+    Accept: application/json
+  timeout_sec: 15
+examples:
+  - title: simple check
+    args: {}
+```
+
+This is a legitimate zero-arg tool — the §2.5 exception applies, one example is fine.
+
+### 15.3 URL / header environment interpolation
+
+`${VAR}` (and `${VAR:-default}`) inside `url`, `headers` values, and
+`body_template` is substituted with the process environment at call time. **This
+is the only safe way to inject secrets** — do not hard-code tokens in
+`meta.yaml`, and do not pass them as args (args end up in tool logs and search
+indices).
+
+Required env conventions for this catalog:
+
+| Env var               | Purpose                                                |
+|-----------------------|--------------------------------------------------------|
+| `STMC_CLUSTER_URL`    | Base URL of the SmartTwinCluster control plane.        |
+| `STMC_CLUSTER_TOKEN`  | Bearer token. Required by any tool that hits the API.  |
+
+If a required env var is missing at call time, the runner returns a `RunResult`
+with `ok: false` and a `stderr` field like `"missing env vars: STMC_CLUSTER_TOKEN,
+STMC_CLUSTER_URL"` (sorted, comma-joined), and the `command` field still shows the
+literal `${VAR}` so it's obvious what was unresolved. No network request is fired.
+**Do not** put fallback tokens in `meta.yaml`.
+
+### 15.4 Body templating (`POST`/`PUT`/`PATCH`)
+
+`body_template` is a Python `str.format_map` template over the args. Unknown
+placeholders cause a clean error before any HTTP request fires.
+
+```yaml
+transport:
+  kind: http
+  method: POST
+  url: ${STMC_CLUSTER_URL}/v1/jobs
+  headers:
+    Authorization: "Bearer ${STMC_CLUSTER_TOKEN}"
+  body_template: |
+    {"case_dir": "{case_dir}", "solver": "{solver}", "gpus": {gpus}}
+  timeout_sec: 60
+```
+
+`Content-Type: application/json` is **auto-injected** by the runner whenever a body
+is sent and the header isn't already set, so you don't need to list it explicitly.
+The runner also auto-adds `Accept: application/json`. Override either by listing it
+in `headers` if your endpoint is unusual.
+
+For complex/conditional bodies, use `local` transport with a Python script
+that builds the JSON, then POSTs via `urllib`/`curl`. See §15.1.
+
+### 15.5 Response handling — what the LLM sees
+
+The runner returns:
+
+```json
+{
+  "tool": "get_cluster_health@1.0.0",
+  "ok": true,
+  "exit_code": 200,
+  "stdout": "<raw response body>",
+  "result": { ...parsed JSON if the response was JSON... },
+  "transport": "http",
+  "command": "GET https://...truncated..."
+}
+```
+
+- `ok: true` iff HTTP status is in `[200, 300)`.
+- `result` is populated only when the response body parses as JSON. Plain-text
+  responses live in `stdout`.
+- 4xx / 5xx surface as `ok: false` with `exit_code = status` and the response
+  body in `stdout`. Do not retry from the LLM side; if you need retry, see §15.6.
+
+### 15.6 Retries and timeouts
+
+The runner does **not** retry by default. If your endpoint is flaky and you
+want retries, encode them in a `local` script (urllib + simple backoff loop).
+Pure HTTP transport stays declarative.
+
+`timeout_sec` is per-request. Default is 120 seconds. Set lower (10-15s) for
+health checks; higher (300s+) only when the API itself takes that long.
+
+### 15.7 The `script.sh` placeholder for HTTP tools
+
+The catalog still requires `script.sh` to exist (loader checks for the file).
+Make it a no-op that prints an error if someone runs it directly:
+
+```bash
+#!/usr/bin/env bash
+echo '{"ok": false, "reason": "this tool uses http transport, not script execution"}'
+exit 1
+```
+
+`chmod +x` it like any other script.
+
+### 15.8 HTTP anti-patterns
+
+| Don't                                                | Why                                                              |
+|------------------------------------------------------|------------------------------------------------------------------|
+| Hard-code tokens in `meta.yaml`                      | meta files are committed to git. Use `${STMC_CLUSTER_TOKEN}`.    |
+| Pass tokens as tool args                             | Args appear in logs and search hits. Use env interpolation.      |
+| Use `http` for paginated APIs                        | No loop construct. Use `local` + `curl`/`urllib` for pagination. |
+| Use `http` then re-parse the body in another tool    | The runner already parses JSON into `result`. Reuse it.          |
+| Set `timeout_sec: 600` for a health check            | Health endpoints fail fast. 15s is plenty.                       |
