@@ -1,0 +1,55 @@
+name: get_cluster_health
+version: 1.0.0
+summary: Hit the SmartTwinCluster control-plane /v1/health endpoint and return raw JSON.
+description: |
+  Returns the SmartTwinCluster control-plane health snapshot as raw JSON.
+  Performs a single GET against `${STMC_CLUSTER_URL}/v1/health` with a Bearer
+  token sourced from `${STMC_CLUSTER_TOKEN}`. No registry interaction, no
+  side effects.
+
+  # When to call this
+  - User asks "is the cluster up?", "how busy is the cluster?", or similar
+  - As a pre-flight check before submitting a large batch of jobs
+  - To diagnose whether downstream failures are caused by an unreachable control plane
+
+  # When NOT to call this
+  - To list jobs or job status → use `list_recent_jobs` or `job_status`
+  - To submit work → use `submit_job` / `submit_lsdyna_job`
+
+  # Pre-conditions
+  - Environment variables `STMC_CLUSTER_URL` and `STMC_CLUSTER_TOKEN` must be
+    set in the MCP server process. If either is missing, the runner returns
+    `ok: false` with `stderr` listing the missing names — no network call is
+    made.
+
+  # Returns
+  The runner wraps the HTTP response. On a 2xx response:
+  ```json
+  {
+    "tool": "get_cluster_health@1.0.0",
+    "ok": true,
+    "exit_code": 200,
+    "stdout": "<raw response body>",
+    "result": { "...parsed JSON from the cluster..." },
+    "transport": "http",
+    "command": "GET <url>"
+  }
+  ```
+  On a non-2xx response or transport error, `ok` is `false` and the response
+  body (if any) is in `stdout` while the error message is in `stderr`.
+tags: [http, cluster, health, monitoring, smarttwincluster, preflight]
+transport:
+  kind: http
+  method: GET
+  url: ${STMC_CLUSTER_URL}/v1/health
+  headers:
+    Authorization: "Bearer ${STMC_CLUSTER_TOKEN}"
+    Accept: application/json
+  timeout_sec: 15
+expose: catalog
+examples:
+  - title: simple health check
+    args: {}
+    note: |
+      Takes no arguments. Requires STMC_CLUSTER_URL and STMC_CLUSTER_TOKEN to be
+      exported in the server's environment.

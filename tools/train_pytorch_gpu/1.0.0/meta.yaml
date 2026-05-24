@@ -1,0 +1,78 @@
+name: train_pytorch_gpu
+version: 1.0.0
+summary: Submit a PyTorch training script to a Slurm GPU partition via apptainer.
+description: |
+  Builds an sbatch wrapper that runs a user-supplied PyTorch training script
+  inside an apptainer (singularity) image with the right GPU environment, then
+  submits via `sbatch`. Supports `dry_run: true` to render the script without
+  submitting.
+
+  # When to call this
+  - User wants to train a PyTorch model on a Slurm GPU partition.
+  - User already has a self-contained training script (.py) and wants the tool
+    to handle Slurm directives, apptainer exec, and GPU env vars.
+
+  # When NOT to call this
+  - LS-DYNA (CPU MPP) jobs → `submit_lsdyna_job`.
+  - Drop-test scenarios (KooChainRun) → `single_drop_simulation` /
+    `fullangle_drop_simulation`.
+
+  # Pre-conditions
+  - `train_script` exists on disk (absolute path, .py).
+  - `work_dir` exists and is writable (sbatch stdout/stderr land here as
+    `train.slurm.out` / `train.slurm.err`).
+  - `apptainer_sif` exists on the compute nodes (default
+    `/opt/apptainers/pytorch_cuda12.sif`).
+  - `gpu_partition` is set whenever `gpus >= 1`.
+
+  # Behavior
+  1. Cross-validate `gpus` vs `gpu_partition` (see §14.1 of AGENT_GUIDE).
+  2. Build sbatch directives per §14.2 (`--gres=gpu:<type>:N`, scaled cpus/mem).
+  3. Build the `apptainer exec --nv` line with NVIDIA env vars per §14.3.
+  4. Write `<work_dir>/train.sbatch` and (unless `dry_run`) call `sbatch`.
+  5. Record the submission in the registry; GPU spec lives in `extra` (§14.4).
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "registry_id": 42,
+    "tool": "train_pytorch_gpu",
+    "work_dir": "/data/.../run01",
+    "sbatch_path": "/data/.../run01/train.sbatch",
+    "slurm_job_ids": ["12345"],
+    "status": "submitted" | "dry_run",
+    "sbatch_params": {
+      "partition": "gpu-a100",
+      "gres": "a100:2",
+      "cpus_per_task": 16,
+      "mem": "64G",
+      "time_limit": "04:00:00"
+    },
+    "gpu": {"gpus": 2, "gpu_type": "a100", "gpu_partition": "gpu-a100"}
+  }
+  ```
+tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml]
+aliases: [submit_pytorch_train, pytorch_sbatch]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 60
+expose: catalog
+examples:
+  - title: minimal dry_run (CPU-only validation of the sbatch text)
+    args:
+      train_script: /data/koopark/ml/train.py
+      work_dir: /data/koopark/ml/run01
+  - title: 2x A100 real submission
+    args:
+      train_script: /data/koopark/ml/train.py
+      work_dir: /data/koopark/ml/run01
+      apptainer_sif: /opt/apptainers/pytorch_cuda12.sif
+      extra_args: ["--epochs", "50", "--batch-size", "128"]
+      gpus: 2
+      gpu_type: a100
+      gpu_partition: gpu-a100
+      time_limit: "12:00:00"
+      dry_run: false
+    note: dry_run=false actually submits to Slurm. Confirm with user first.
