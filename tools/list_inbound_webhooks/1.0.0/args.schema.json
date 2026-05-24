@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_inbound_webhooks args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Filter by source label written by the sidecar (e.g. 'github', 'slurm-callback', 'vendor-x'). Exact match."
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Filter by event_type (source-specific, e.g. 'push', 'job.completed'). Exact match."
+    },
+    "ack_status": {
+      "type": "string",
+      "enum": ["pending", "acked", "error"],
+      "default": "pending",
+      "description": "Filter by ack_status. Default 'pending' shows only unconsumed rows."
+    },
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch seconds. Filter to rows with received_at >= since."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 50,
+      "description": "Max rows to return. Newest-first ordering."
+    }
+  }
+}

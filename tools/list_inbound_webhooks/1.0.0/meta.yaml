@@ -1,0 +1,77 @@
+name: list_inbound_webhooks
+version: 1.0.0
+summary: Page through the inbound webhook queue written by the sidecar (SQLite).
+description: |
+  Reads `/data/SmartTwinMCP/inbound_webhooks.db` — the SQLite queue that an external
+  webhook-receiver sidecar (not in this repo, see AGENT_GUIDE.md §17.1) populates
+  whenever a remote service POSTs to a configured endpoint (GitHub, Slurm callbacks,
+  third-party vendors, …).
+
+  This tool **only reads**. It does not ack rows. Pair it with `ack_inbound_webhook`
+  after the LLM has actually acted on an event so the same row isn't reprocessed.
+
+  # When to call this
+  - User asks "any new webhooks?", "what GitHub events came in?", "any pending
+    Slurm callbacks?"
+  - Polling step in an LLM-driven workflow that reacts to inbound events
+  - Diagnosing why a sidecar-delivered event was/wasn't processed
+
+  # Distinguish from similar tools
+  - list_inbound_webhooks vs ack_inbound_webhook: list = read-only query;
+    ack = mark a single row consumed.
+  - list_inbound_webhooks vs list_recent_jobs: webhooks are INBOUND events from
+    external services; jobs are OUTBOUND submissions you made. Different DBs.
+
+  # Pre-conditions
+  - The sidecar service must be deployed and writing to
+    `/data/SmartTwinMCP/inbound_webhooks.db`. If the file doesn't exist this tool
+    returns `ok: false` with `reason` mentioning the sidecar.
+  - The schema must match AGENT_GUIDE.md §17.1 (the sidecar's responsibility).
+
+  # Filtering
+  All filters are ANDed. Default ack_status is "pending" — call again with
+  `ack_status: "acked"` or `"error"` to inspect history.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "list_inbound_webhooks",
+    "count": 2,
+    "webhooks": [
+      {
+        "webhook_id": 17,
+        "received_at": 1716500000,
+        "source": "github",
+        "event_type": "push",
+        "headers": { "X-GitHub-Event": "push", "...": "..." },
+        "payload": { "ref": "refs/heads/main", "...": "..." },
+        "signature_verified": 1,
+        "ack_status": "pending",
+        "ack_at": null,
+        "ack_note": null
+      }
+    ]
+  }
+  ```
+
+  # Test override
+  The DB path is `/data/SmartTwinMCP/inbound_webhooks.db`. The env var
+  `STMC_WEBHOOK_DB`, if set, overrides this path — this is a TEST OVERRIDE used by
+  the §7 verification script. **Production callers should NOT set `STMC_WEBHOOK_DB`.**
+tags: [webhook, inbound, sidecar, sqlite, queue]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: default — pending webhooks, newest first
+    args: {}
+  - title: GitHub push events from the last hour, including already-acked
+    args:
+      source: github
+      event_type: push
+      ack_status: acked
+      since: 1716496400
+      limit: 100

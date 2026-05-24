@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ack_inbound_webhook args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["webhook_id", "outcome"],
+  "properties": {
+    "webhook_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Primary key of the row in inbound_webhooks.db. Obtain from list_inbound_webhooks (the 'webhook_id' field)."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["acked", "error"],
+      "description": "'acked' = successfully processed. 'error' = failed/won't process; flagged so it's no longer pending."
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional human-readable explanation. Recommended when outcome='error'."
+    }
+  }
+}
