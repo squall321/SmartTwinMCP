@@ -20,8 +20,10 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterable
 
-DB_DIR = "/data/SmartTwinMCP"
-DB_PATH = os.path.join(DB_DIR, "jobs.db")
+# Production path. Tests / §7 step-6 verification should set STMC_JOBS_DB to a
+# tmpfile to avoid polluting production state. Production callers leave it unset.
+DB_PATH = os.environ.get("STMC_JOBS_DB") or "/data/SmartTwinMCP/jobs.db"
+DB_DIR = os.path.dirname(DB_PATH)
 
 
 SCHEMA = """
