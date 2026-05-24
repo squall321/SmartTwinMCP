@@ -155,6 +155,12 @@ worked example.
 **Don't**: write "see the code" or assume the LLM has access to anything outside
 `meta.yaml` + `args.schema.json` + `examples`. It doesn't.
 
+**Language policy:** LLM-facing fields (`summary`, `description`, JSON Schema
+`description`s) may be in Korean, English, or mixed. Match the convention of neighboring
+tools when in doubt — most existing `job_*` and drop-simulation tools use Korean
+prose with English section headers (`# When to call this`), which is fine and
+discoverable by both Korean and English prompts.
+
 ### 2.5 `examples` are not optional in practice
 
 Even though the spec marks them as optional, **always include at least 2 examples**:
@@ -229,6 +235,45 @@ Use **JSON Schema Draft 2020-12**.
   "solver":             { "type": "string", "enum": ["smarttwin-dyna", "openradioss"] }
 }
 ```
+
+### 3.4 The `job_*` lookup pattern (`registry_id` OR `work_dir`)
+
+Any follow-up tool that operates on an already-submitted job (`job_status`, `job_logs`,
+`job_stop`, ...) MUST accept lookup by **either** `registry_id` (preferred) **or**
+`work_dir`. Both are passed to `job_helpers.resolve_job(args)` (§9.3). Encode the
+mutual-exclusion in JSON Schema with `oneOf`:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job_logs args",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [
+    { "required": ["registry_id"] },
+    { "required": ["work_dir"] }
+  ],
+  "properties": {
+    "registry_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "DB primary key from the registry (preferred lookup)."
+    },
+    "work_dir": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute path to the job's work directory (fallback if registry_id unknown)."
+    },
+    "lines": {
+      "type": "integer", "minimum": 1, "maximum": 5000, "default": 50,
+      "description": "Lines to tail from each log file."
+    }
+  }
+}
+```
+
+`oneOf` rejects both empty `{}` and ambiguous `{registry_id: 1, work_dir: "/x"}`,
+which is exactly what we want.
 
 ---
 
@@ -613,7 +658,13 @@ def resolve_job(args: dict) -> dict | None:
 def fail(reason: str, **extra) -> NoReturn:
     """Print {"ok": false, "reason": ..., **extra} to stdout and exit(1).
     Use this everywhere instead of raising bare exceptions —
-    it keeps the JSON-stdout contract from §4.3."""
+    it keeps the JSON-stdout contract from §4.3.
+
+    NOTE: If you're already importing `job_helpers` (which most job_* tools do),
+    use `job_helpers.fail(...)` instead of defining a local `fail()` in your
+    script. The skeleton in §4.4 defines a local `fail` only for tools that
+    don't need any shared helpers; once you `import job_helpers`, drop the
+    local copy."""
 
 def run_koochainrun(
     subcommand: str,
@@ -643,6 +694,12 @@ if rc != 0:
 
 print(json.dumps({"ok": True, "tool": "...", "registry_id": job["id"], ...}))
 ```
+
+**Key-name flip to remember:** the DB column is named `id`, so the dict returned by
+`resolve_job()` has `job["id"]`. The downstream-facing JSON response field is named
+`registry_id`. The flip happens at exactly one place — when you build the response
+dict, write `"registry_id": job["id"]`. Don't carry the bare `id` through; callers
+expect `registry_id`.
 
 ### 9.4 `scenario_builder.py` — drop-test scenario JSON
 
