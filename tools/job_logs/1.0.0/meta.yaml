@@ -1,0 +1,56 @@
+name: job_logs
+version: 1.0.0
+summary: Slurm 로그 파일(stdout/stderr)의 마지막 N줄을 반환.
+description: |
+  레지스트리에서 잡을 찾아 `<work_dir>/lsdyna.slurm.out` (stdout)과
+  `<work_dir>/lsdyna.slurm.err` (stderr)의 마지막 N줄(`lines`, 기본 50, 최대 5000)을
+  읽어서 반환한다. 사용자가 잡이 왜 느린지, 무엇을 출력했는지 채팅을 떠나지 않고
+  바로 확인할 수 있게 해 준다.
+
+  # When to call this
+  - 사용자가 "로그 보여줘", "출력 확인", "tail", "왜 느려?", "에러 메시지" 같은 식으로
+    Slurm 로그 내용을 확인하고 싶어할 때.
+  - `submit_lsdyna_job` 으로 제출한 raw .k 잡, `single_drop_simulation`,
+    `fullangle_drop_simulation` 등 `lsdyna.slurm.{out,err}` 를 쓰는 모든 잡에 적용 가능.
+
+  # Distinguish from similar tools
+  - job_logs vs job_status: job_status 는 squeue/KooChainRun 상태 메타데이터를 반환.
+    실제 로그 텍스트가 필요하면 job_logs.
+  - job_logs vs job_diagnose: job_diagnose 는 KooChainRun 진단(에러 패턴 매칭) 결과.
+    원본 로그 자체가 보고 싶으면 job_logs.
+
+  # Pre-conditions
+  - 잡이 레지스트리에 존재해야 함 (`submit_*` 류 도구가 먼저 호출되어 있어야 함).
+  - 로그 파일은 잡이 시작되어야 생성되므로, PENDING 상태이면 `*_exists: false`로 빈 tail 반환 (정상 동작, 실패 아님).
+
+  # 인자: registry_id 또는 work_dir 둘 중 하나는 필수.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "job_logs",
+    "registry_id": 42,
+    "work_dir": "/data/koopark/case_X",
+    "stdout_path": "/data/koopark/case_X/lsdyna.slurm.out",
+    "stderr_path": "/data/koopark/case_X/lsdyna.slurm.err",
+    "stdout_exists": true,
+    "stderr_exists": true,
+    "stdout_tail": "...last N lines...",
+    "stderr_tail": "...last N lines...",
+    "lines": 50
+  }
+  ```
+tags: [logs, tail, slurm, jobs, debug, stdout, stderr]
+aliases: [logs, tail_logs, slurm_logs]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 30
+expose: catalog
+examples:
+  - title: registry_id로 조회 (기본 50줄)
+    args: {registry_id: 42}
+  - title: work_dir + 200줄
+    args: {work_dir: /data/koopark/fullangle_test, lines: 200}
+    note: 파일이 아직 생성 전이면 *_exists=false 로 응답 (실패 아님).
