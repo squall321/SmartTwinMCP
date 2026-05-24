@@ -206,19 +206,38 @@ def _register_direct(mcp: FastMCP, entry, state: dict) -> None:
 
 
 def _suggest(query: str, catalog: Catalog, k: int = 5) -> list[str]:
-    """Cheap suggestion: tools whose name shares any token with the query."""
+    """Cheap suggestion: combine token overlap + substring + difflib fuzzy match.
+
+    The token-only version missed typos like 'echoo' -> 'echo' because they
+    tokenize to disjoint sets.
+    """
+    import difflib
     from .search import _tokens
-    q = set(_tokens(query))
-    if not q:
+
+    if not query:
         return sorted(catalog.latest_by_name)[:k]
-    scored = []
-    for name in catalog.latest_by_name:
-        n = set(_tokens(name))
-        overlap = len(q & n)
-        if overlap:
-            scored.append((overlap, name))
-    scored.sort(reverse=True)
-    return [n for _, n in scored[:k]]
+
+    q_norm = query.lower()
+    q_tokens = set(_tokens(query))
+    names = list(catalog.latest_by_name)
+
+    scored: dict[str, float] = {}
+    for name in names:
+        score = 0.0
+        # token overlap (original behavior)
+        if q_tokens:
+            score += 2.0 * len(q_tokens & set(_tokens(name)))
+        # substring either direction
+        if q_norm in name or name in q_norm:
+            score += 3.0
+        # difflib ratio for typos
+        ratio = difflib.SequenceMatcher(None, q_norm, name).ratio()
+        if ratio >= 0.6:
+            score += ratio
+        if score > 0:
+            scored[name] = score
+
+    return [n for n, _ in sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))[:k]]
 
 
 def main() -> None:
