@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -142,29 +143,90 @@ def _run_ssh(entry: ToolEntry, args: dict, t: SshTransport) -> RunResult:
     )
 
 
+_ENV_TOKEN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _interpolate_env(s: str, env: dict[str, str]) -> tuple[str, list[str]]:
+    """Replace ${VAR} and ${VAR:-default}. Returns (rendered, missing_vars).
+
+    Missing vars (no default given) are left in the string so the caller can
+    decide what to do — we don't silently emit empty strings into a URL.
+    """
+    missing: list[str] = []
+
+    def sub(m: re.Match) -> str:
+        name = m.group(1)
+        default = m.group(2)
+        if name in env:
+            return env[name]
+        if default is not None:
+            return default
+        missing.append(name)
+        return m.group(0)  # leave the literal ${VAR} so the caller sees it
+
+    return _ENV_TOKEN.sub(sub, s), missing
+
+
 def _run_http(entry: ToolEntry, args: dict, t: HttpTransport) -> RunResult:
     """Send args as the request body. body_template, if set, is formatted with args.
+
+    Supports ${VAR} and ${VAR:-default} interpolation in url, headers, and
+    body_template, sourced from the process environment. Missing required env
+    vars cause a clean failure before any network request fires.
 
     We use urllib to avoid a hard runtime dep on httpx for the minimal case.
     """
     import urllib.request
     import urllib.error
 
+    env = os.environ
+
+    url, miss_url = _interpolate_env(t.url, env)
+    rendered_headers: dict[str, str] = {}
+    miss_hdr: list[str] = []
+    for k, v in t.headers.items():
+        rv, m = _interpolate_env(v, env)
+        rendered_headers[k] = rv
+        miss_hdr.extend(m)
+
+    missing = sorted(set(miss_url + miss_hdr))
+    sanitized_cmd = f"{t.method} {url}"
+
+    if missing:
+        return RunResult(
+            ok=False, exit_code=None, stdout="",
+            stderr=f"missing env vars: {', '.join(missing)}",
+            parsed=None, transport="http", command=sanitized_cmd,
+        )
+
+    body_bytes: bytes | None
     if t.body_template:
+        rendered_template, miss_body = _interpolate_env(t.body_template, env)
+        if miss_body:
+            return RunResult(
+                ok=False, exit_code=None, stdout="",
+                stderr=f"missing env vars in body_template: {', '.join(sorted(set(miss_body)))}",
+                parsed=None, transport="http", command=sanitized_cmd,
+            )
         try:
-            body_str = t.body_template.format_map(_SafeArgs(args))
+            body_str = rendered_template.format_map(_SafeArgs(args))
         except KeyError as e:
             return RunResult(
                 ok=False, exit_code=None, stdout="",
                 stderr=f"body_template references missing arg {e}",
-                parsed=None, transport="http", command=f"{t.method} {t.url}",
+                parsed=None, transport="http", command=sanitized_cmd,
             )
         body_bytes = body_str.encode("utf-8")
-    else:
+    elif t.method in ("POST", "PUT", "PATCH"):
         body_bytes = json.dumps(args).encode("utf-8")
+    else:
+        body_bytes = None  # GET/DELETE: don't send a body, urllib gets upset
 
-    headers = {"Content-Type": "application/json", **t.headers}
-    req = urllib.request.Request(t.url, data=body_bytes, headers=headers, method=t.method)
+    headers = {"Accept": "application/json", **rendered_headers}
+    if body_bytes is not None and "Content-Type" not in headers:
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body_bytes, headers=headers, method=t.method)
     try:
         with urllib.request.urlopen(req, timeout=t.timeout_sec) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
@@ -175,19 +237,19 @@ def _run_http(entry: ToolEntry, args: dict, t: HttpTransport) -> RunResult:
                 stderr="",
                 parsed=_try_parse_json(raw),
                 transport="http",
-                command=f"{t.method} {t.url}",
+                command=sanitized_cmd,
             )
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace") if e.fp else ""
         return RunResult(
             ok=False, exit_code=e.code, stdout=body, stderr=str(e),
             parsed=_try_parse_json(body), transport="http",
-            command=f"{t.method} {t.url}",
+            command=sanitized_cmd,
         )
     except (urllib.error.URLError, TimeoutError) as e:
         return RunResult(
             ok=False, exit_code=None, stdout="", stderr=str(e),
-            parsed=None, transport="http", command=f"{t.method} {t.url}",
+            parsed=None, transport="http", command=sanitized_cmd,
         )
 
 
