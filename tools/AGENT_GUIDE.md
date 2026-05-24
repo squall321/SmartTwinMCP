@@ -523,7 +523,11 @@ test -L tools/my_tool/latest && readlink tools/my_tool/latest
 # 6. End-to-end run — TRANSPORT-DEPENDENT
 #
 # 6a. transport: local
-STMC_ARGS_JSON='{"...minimal valid args..."}' bash tools/my_tool/1.0.0/script.sh | python3 -m json.tool
+#     If your tool calls registry.record_submission(), ALWAYS set STMC_JOBS_DB
+#     to a tmpfile (§9.2) so verification rows don't leak into production.
+STMC_JOBS_DB=/tmp/test_jobs.db \
+STMC_ARGS_JSON='{"...minimal valid args..."}' \
+bash tools/my_tool/1.0.0/script.sh | python3 -m json.tool
 #
 # 6b. transport: ssh
 # Same env trick, but run through the runner instead of `bash` directly:
@@ -630,6 +634,17 @@ absolute paths — different deployments mount the tree elsewhere.
 ### 9.2 `registry.py` — SQLite job registry
 
 **DB path:** `/data/SmartTwinMCP/jobs.db` (auto-created on first call, WAL mode enabled).
+
+**Test override:** if the `STMC_JOBS_DB` env var is set at import time, `registry.py`
+uses that path instead. **Use this in §7 step 6 verification** to keep test runs
+out of the production registry:
+
+```bash
+STMC_JOBS_DB=/tmp/test_jobs.db STMC_ARGS_JSON='{...}' bash tools/my_tool/1.0.0/script.sh
+```
+
+Production callers must NOT set this. Don't reference `STMC_JOBS_DB` in any tool's
+`meta.yaml` `description` or `args.schema.json` — it's a test seam, not a feature.
 
 **Schema columns (read-only — don't ALTER the table from a tool):**
 
@@ -1060,6 +1075,18 @@ linearly. Since §14.1 guarantees `gpus >= 1` on this code path, the multiplicat
 is always safe (no zero-cpu allocations). Print the resolved values in your tool's
 JSON response so users see what was actually requested.
 
+**Reconciling §14.2 and §16.2 when both apply** (multi-node + multi-GPU tools):
+
+- §14.2's "8 cpus per GPU" rule is *per-task* in the multi-node world. With
+  `ntasks_per_node = gpus_per_node` (the standard distributed-training topology
+  of one rank per GPU), set `--cpus-per-task = 8` flat. Total CPUs allocated
+  per node = `8 * gpus_per_node`, matching §14.2 in aggregate.
+- §14.2's "32G per GPU" memory rule becomes `--mem-per-cpu = 4G` (since
+  `32G / 8 cpus = 4G/cpu`). Don't use `--mem` on multi-node — §16.2 / §16.7.
+- If your tool uses a non-standard topology (e.g. 4 ranks per GPU for data
+  loaders), state the cpu/mem formula explicitly in `description` so the LLM
+  doesn't have to guess.
+
 ### 14.3 Environment variables inside the sbatch script
 
 Inside the apptainer/singularity exec (or bare process) for GPU workloads:
@@ -1070,12 +1097,16 @@ Inside the apptainer/singularity exec (or bare process) for GPU workloads:
 --nv                                   # apptainer flag — exposes nvidia-smi + libs into the container
 ```
 
-For multi-GPU training, set:
+For multi-GPU training **on a single node**, set:
 
 ```bash
 --env NCCL_DEBUG=WARN
 --env NCCL_SOCKET_IFNAME=^docker0,lo   # avoid loopback/docker bridges
 ```
+
+For multi-node multi-GPU training, **§16.4 supersedes this snippet** — it adds
+`bond0` to the NIC exclusion list and turns on IB and async error handling. Use
+§16.4's full set when `nodes >= 2`.
 
 Do **not** export `CUDA_VISIBLE_DEVICES` yourself — Slurm sets it correctly based
 on `--gres`. Overriding it breaks multi-GPU scheduling.
@@ -1262,3 +1293,392 @@ exit 1
 | Use `http` for paginated APIs                        | No loop construct. Use `local` + `curl`/`urllib` for pagination. |
 | Use `http` then re-parse the body in another tool    | The runner already parses JSON into `result`. Reuse it.          |
 | Set `timeout_sec: 600` for a health check            | Health endpoints fail fast. 15s is plenty.                       |
+
+---
+
+## 16. Multi-node MPI jobs (Slurm conventions)
+
+Conventions for tools that submit MPI jobs spanning **more than one compute node**.
+Single-node MPI (the `submit_lsdyna_job` case) uses `--ntasks=1 --cpus-per-task=N`
+and doesn't need these — Slurm and the in-container MPI runtime handle everything.
+
+Once you cross node boundaries, you're picking the topology, and Slurm needs you
+to be explicit. The conventions below are *additive* on top of §14 (GPU); combining
+multi-node and multi-GPU is the common case for distributed training.
+
+### 16.1 Required args for multi-node tools
+
+```json
+{
+  "nodes": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 64,
+    "default": 1,
+    "description": "Number of compute nodes. 1 = single-node (no MPI fabric setup). >= 2 enables the multi-node path."
+  },
+  "ntasks_per_node": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 128,
+    "default": 1,
+    "description": "MPI ranks per node. For pure MPI: cpus per node / cpus-per-task. For 1-rank-per-GPU training: equal to gpus per node."
+  },
+  "mpi_fabric": {
+    "type": "string",
+    "enum": ["auto", "ofi", "ucx", "tcp"],
+    "default": "auto",
+    "description": "MPI transport fabric. 'auto' = let the runtime pick (works for most jobs). Force tcp only as a fallback when the high-performance fabric misbehaves."
+  }
+}
+```
+
+Tools that are also GPU-aware (§14) add the three §14.1 args on top of these.
+Tools that aren't GPU-aware (pure CPU MPI like LS-DYNA MPP across nodes) just
+add the three above.
+
+### 16.2 sbatch directives — the canonical multi-node snippet
+
+```bash
+#SBATCH --partition={partition}
+#SBATCH --nodes={nodes}
+#SBATCH --ntasks-per-node={ntasks_per_node}
+#SBATCH --cpus-per-task={cpus_per_task}
+#SBATCH --mem-per-cpu={mem_per_cpu}              # NOT --mem; on multi-node, use --mem-per-cpu
+#SBATCH --time={time_limit}
+#SBATCH --exclusive                              # Recommended: prevents other jobs sharing nodes
+{gres_line}                                      # §14.2 --gres=gpu:... — only if GPU-aware
+```
+
+**`--mem` vs `--mem-per-cpu`:** on single-node jobs `--mem=32G` is fine. On
+multi-node, `--mem=32G` means 32G *total across all nodes*, which is almost
+never what you want. Use `--mem-per-cpu=4G` (or similar) so each rank gets a
+sane allocation regardless of node count.
+
+**`--exclusive`:** without it, Slurm can co-schedule other jobs onto your nodes
+and starve MPI collectives. Multi-node MPI without `--exclusive` is a footgun.
+
+**Total ranks** = `nodes * ntasks_per_node`. Always print this in your tool's JSON
+response so users can sanity-check.
+
+### 16.3 Launching the MPI program
+
+Inside the sbatch script, use **`srun`**, not `mpirun`, when on Slurm. `srun`
+inherits the allocation correctly; `mpirun` requires you to construct a hostfile
+and pass `--map-by`/`--bind-to` flags that vary by MPI implementation.
+
+```bash
+srun --mpi=pmix \
+  apptainer exec --bind /data:/data{gpu_nv_flag} \
+    {sif_path} \
+    /path/to/binary {args...}
+```
+
+- `--mpi=pmix` is the right default for modern OpenMPI / Intel MPI builds, and
+  the only value §16 tools should hard-code. **Do not expose `--mpi=` as a tool
+  arg** — the `mpi_fabric` arg (§16.1) covers the fabric, not the PMIx/PMI
+  binding. If your cluster's Slurm is too old for pmix and you need
+  `--mpi=openmpi` instead, file that as a separate tool variant
+  (`submit_distributed_train_legacy_pmi`) rather than expanding `mpi_fabric`'s
+  enum — keeping the standard tool predictable matters more than covering one
+  legacy cluster.
+- Don't write your own hostfile. Don't pass `-n {total_ranks}` to `mpirun` from
+  inside an sbatch script — `srun` already knows.
+- For GPU jobs, add the `--nv` flag (§14.3) and the env vars from §16.4.
+
+### 16.4 MPI fabric environment vars
+
+The exact env depends on `mpi_fabric`:
+
+```bash
+case "{mpi_fabric}" in
+  ofi|auto)
+    --env FI_PROVIDER=verbs,tcp
+    --env I_MPI_FABRICS=ofi
+    ;;
+  ucx)
+    --env UCX_TLS=rc,tcp
+    --env I_MPI_FABRICS=ucx
+    ;;
+  tcp)
+    --env FI_PROVIDER=tcp
+    --env I_MPI_FABRICS=tcp
+    --env OMPI_MCA_btl=tcp,self
+    ;;
+esac
+```
+
+For NCCL on multi-node GPU jobs (§14.3 has the single-node basics):
+
+```bash
+--env NCCL_SOCKET_IFNAME=^docker0,lo,bond0      # exclude bridges/bond
+--env NCCL_IB_DISABLE=0                          # let NCCL use IB if available
+--env NCCL_DEBUG=WARN                            # quiet unless something's wrong
+--env NCCL_ASYNC_ERROR_HANDLING=1
+```
+
+Hard rule: **don't set `OMPI_MCA_orte_base_help_aggregate=0`** unless debugging.
+It makes MPI dump per-rank errors and floods the log.
+
+### 16.5 Registry fields for MPI jobs
+
+Use `registry.extra` (no new columns). **The four keys below are mandatory** for
+any §16 tool — downstream tools (`job_status`, `job_logs`, ...) inspect them to
+render a proper multi-node view. This is stricter than §14.4 where GPU fields
+are opt-in; here they're required because nothing else captures the topology.
+
+```python
+extra={
+    "nodes": nodes,
+    "ntasks_per_node": ntasks_per_node,
+    "total_ranks": nodes * ntasks_per_node,
+    "mpi_fabric": mpi_fabric,
+    # ...plus §14.4 gpu fields if also GPU-aware (also required when GPU-aware)
+}
+```
+
+### 16.6 Single-node fast path
+
+When `nodes == 1`, **skip** `--exclusive`, `--mem-per-cpu`, the `srun --mpi=pmix`
+launcher, and the fabric env vars. Use the single-node pattern from §14.2 / the
+existing `submit_lsdyna_job`. Mixing multi-node directives onto a single-node
+allocation works on most clusters but wastes scheduling priority — and tells the
+scheduler your job is much bigger than it is.
+
+Branch in `script.sh`:
+
+```python
+nodes = int(args.get("nodes", 1))
+if nodes == 1:
+    # Use the §14 single-node sbatch template.
+    sbatch_text = SINGLE_NODE_TEMPLATE.format(...)
+else:
+    # Use the §16.2 multi-node template + §16.4 fabric env.
+    sbatch_text = MULTINODE_TEMPLATE.format(...)
+```
+
+### 16.7 MPI anti-patterns
+
+| Don't                                                       | Why                                                             |
+|-------------------------------------------------------------|-----------------------------------------------------------------|
+| Use `--mem=...` on multi-node                               | That's the TOTAL across all nodes. Use `--mem-per-cpu` instead. |
+| Skip `--exclusive` on multi-node                            | Co-scheduled jobs starve MPI collectives. Always set it.        |
+| `mpirun -n {ranks}` from inside sbatch                      | Use `srun`. It already knows the allocation.                    |
+| Write your own hostfile                                     | Slurm + srun does this. Custom hostfiles drift on node changes. |
+| Force `mpi_fabric: tcp` as default                          | Loses 10-100x performance vs verbs/UCX. Use 'auto' default.     |
+| Set NCCL/MPI env on the single-node path                    | Pointless overhead and confusing logs. Branch on `nodes`.       |
+| Hard-code `--ntasks-per-node=N` to match GPU count silently | Make the relationship explicit: state it in the description.    |
+
+---
+
+## 17. Inbound webhooks (sidecar pattern)
+
+> **Architecture constraint, read this before designing.** This MCP server is
+> **outbound only** — `transport: http` (§15) makes calls *out* to remote APIs.
+> Receiving HTTP requests *into* the catalog (webhooks, callbacks, push events)
+> requires infrastructure outside this repo. **The webhook-receiving tools in
+> this catalog do not listen on a port.** They poll a queue that a separate
+> sidecar service writes to.
+
+### 17.1 The sidecar contract (what lives outside this repo)
+
+A separate service — a small Flask/FastAPI app, an Nginx + Lua hook, an SQS
+consumer, whatever fits — is configured to accept POSTs at e.g.
+`https://stmc-hooks.internal/inbound/<source>` and write each received payload
+as a row in a SQLite table. This is the "sidecar". **This repo does not contain
+the sidecar.** Deployment is out of scope here.
+
+Schema the sidecar MUST write (so the MCP-side tools can read it without
+coordination):
+
+```sql
+CREATE TABLE inbound_webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at INTEGER NOT NULL,        -- unix epoch seconds
+    source TEXT NOT NULL,                -- e.g. "github", "slurm-callback", "vendor-x"
+    event_type TEXT,                     -- e.g. "job.completed", "push" — source-specific
+    headers TEXT,                        -- JSON blob of relevant request headers
+    payload TEXT NOT NULL,               -- raw request body (usually JSON)
+    signature_verified INTEGER,          -- 1 if HMAC checked OK, 0 if not, NULL if N/A
+    ack_status TEXT DEFAULT 'pending',   -- pending | acked | error
+    ack_at INTEGER,                      -- when an MCP tool consumed it
+    ack_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_inbound_received ON inbound_webhooks(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inbound_source ON inbound_webhooks(source, ack_status);
+```
+
+Path convention: `/data/SmartTwinMCP/inbound_webhooks.db` (parallel to the job
+registry's `jobs.db`). Same WAL settings.
+
+**Test override (mirroring §9.2's `STMC_JOBS_DB`):** every §17 tool MUST honor
+`STMC_WEBHOOK_DB` at import time and prefer it over the production path when
+set. Use it in §7 step 6 to verify the tool against a tmpfile DB. Like
+`STMC_JOBS_DB`, this is a test seam — don't expose it in `meta.yaml` or args.
+
+```python
+DB_PATH = os.environ.get("STMC_WEBHOOK_DB") or "/data/SmartTwinMCP/inbound_webhooks.db"
+```
+
+The sidecar's responsibilities (NOT this repo's):
+
+- TLS termination
+- HMAC signature verification (writes the result into `signature_verified`)
+- Idempotency / dedup on `(source, headers[Idempotency-Key])`
+- Rate limiting
+- Persisting the row
+
+**MCP tools in this repo only consume the table.** If you find yourself wanting
+to receive HTTP in a `script.sh`, stop — you're rebuilding the sidecar in the
+wrong layer.
+
+### 17.2 The MCP tools you can author against this table
+
+Standard set (write each as a separate tool; `expose: catalog`):
+
+- `list_inbound_webhooks` — page through the queue, filter by `source`, `event_type`,
+  `ack_status`, `since`. Returns row dicts with the payload **already JSON-parsed**.
+- `get_inbound_webhook` — fetch one row by `id`.
+- `ack_inbound_webhook` — mark a row `acked` (or `error`, with a note). Used after
+  the LLM has acted on the event. Idempotent.
+- `peek_inbound_webhook` — peek at the next pending row without acking.
+
+Don't go beyond this set unless you have a concrete need. The queue is dumb on
+purpose.
+
+### 17.3 Args / behavior conventions
+
+For `list_inbound_webhooks`:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source": { "type": "string", "description": "Filter by source (e.g. 'github')." },
+    "event_type": { "type": "string", "description": "Filter by event_type." },
+    "ack_status": { "type": "string", "enum": ["pending", "acked", "error"], "default": "pending" },
+    "since": { "type": "integer", "minimum": 0, "description": "Unix epoch. Filter received_at >= since." },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+  }
+}
+```
+
+For `ack_inbound_webhook`:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["webhook_id", "outcome"],
+  "properties": {
+    "webhook_id": { "type": "integer", "minimum": 1 },
+    "outcome": { "type": "string", "enum": ["acked", "error"] },
+    "note": { "type": "string", "description": "Optional human-readable explanation." }
+  }
+}
+```
+
+All webhook tools follow the standard envelope from §4.3 — always include `ok`
+and `tool` at the top level of the response. See §17.5 for the per-tool shape.
+
+### 17.4 Authoring `script.sh` for webhook tools
+
+These tools are pure local SQLite reads/writes. **Don't import `_shared/registry.py`**
+— it points at `jobs.db`, different schema, different lifecycle. Open the
+webhook DB directly. `job_helpers.fail` IS fine to import (it's just a JSON
+envelope helper, DB-agnostic); equivalently you can define a local `fail` to
+keep webhook tools fully independent of `_shared/`. Pick one style per tool;
+don't mix.
+
+```python
+import json, os, sqlite3, sys
+
+DB_PATH = os.environ.get("STMC_WEBHOOK_DB") or "/data/SmartTwinMCP/inbound_webhooks.db"
+
+def fail(reason, **extra):
+    print(json.dumps({"ok": False, "reason": reason, **extra}, ensure_ascii=False))
+    sys.exit(1)
+
+if not os.path.exists(DB_PATH):
+    fail("inbound webhook DB missing — sidecar not deployed or wrong host",
+         expected_at=DB_PATH)
+
+con = sqlite3.connect(DB_PATH)
+con.row_factory = sqlite3.Row
+# ... query / mutate ...
+```
+
+JSON-decode the `payload` and `headers` columns before returning rows:
+
+```python
+def row_to_dict(r):
+    d = dict(r)
+    for k in ("payload", "headers"):
+        if d.get(k):
+            try: d[k] = json.loads(d[k])
+            except json.JSONDecodeError: pass
+    return d
+```
+
+### 17.5 Response shape
+
+Always include `webhook_id` (the row id) in any response that references a row.
+Downstream tools will use it to `ack_inbound_webhook`.
+
+`list_inbound_webhooks` returns:
+
+```json
+{
+  "ok": true,
+  "tool": "list_inbound_webhooks",
+  "count": 3,
+  "webhooks": [
+    {
+      "webhook_id": 17,
+      "received_at": 1716_500_000,
+      "source": "github",
+      "event_type": "push",
+      "signature_verified": 1,
+      "ack_status": "pending",
+      "payload": { "...parsed JSON..." }
+    },
+    ...
+  ]
+}
+```
+
+`ack_inbound_webhook` returns:
+
+```json
+{
+  "ok": true,
+  "tool": "ack_inbound_webhook",
+  "webhook_id": 17,
+  "previous_ack_status": "pending",
+  "ack_status": "acked",
+  "idempotent": false
+}
+```
+
+**Idempotency rules for `ack_inbound_webhook`:**
+
+- Calling with the SAME `outcome` and NO new `note` on an already-acked row →
+  `idempotent: true`, no DB write, `previous_ack_status == ack_status` (both
+  equal the current stored value).
+- Calling with the SAME `outcome` and a NEW `note` → writes the note (only),
+  returns `idempotent: false`, `previous_ack_status == ack_status`.
+- Calling with a DIFFERENT `outcome` on an already-acked row → writes both,
+  returns `idempotent: false`, `previous_ack_status` reflects the prior value.
+- Calling on a nonexistent `webhook_id` → hard `fail()`, not idempotent.
+
+### 17.6 Webhook anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Try to receive HTTP in a `script.sh`                   | This server is outbound only. Build a sidecar (§17.1).           |
+| Verify HMAC signatures inside the MCP tool             | The sidecar already did it. Read `signature_verified`.           |
+| Auto-ack on list/peek                                  | Caller must explicitly `ack_inbound_webhook` after acting.       |
+| Reuse `_shared/registry.py` for webhook rows           | Different DB and schema. Open `inbound_webhooks.db` directly.    |
+| Return raw `payload` as a string                       | JSON-decode it. The LLM shouldn't re-parse stdout JSON-in-JSON.  |
+| Block on a long `since` window with no limit           | Use the `limit` arg. The queue can grow unbounded.               |
