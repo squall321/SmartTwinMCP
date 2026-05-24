@@ -498,33 +498,218 @@ If any of these fail, **do not commit**. Fix first.
 
 Existing helpers (do not duplicate):
 
-- [`_shared/registry.py`](_shared/registry.py): SQLite job registry at `/data/SmartTwinMCP/jobs.db`.
-  Persists submitted jobs across MCP sessions. Functions: `record_submission`,
-  `list_recent`, `get_by_id`, `update_status`, `search`. **Use this for any tool that
-  submits, queries, or modifies a long-running job.**
-- [`_shared/scenario_builder.py`](_shared/scenario_builder.py): builds drop-test scenario
-  configs.
-- [`_shared/job_helpers.py`](_shared/job_helpers.py): shared logic for `job_*` tools.
+Three modules. **Read this section before writing anything that touches jobs, KooChainRun,
+Slurm, or LS-DYNA scenarios** — these helpers already exist and re-implementing them in
+your script is an anti-pattern.
 
-How to use:
+### 9.1 How to import (the boilerplate)
 
 ```bash
 export SHARED_DIR="$(cd "$(dirname "$0")"/../../_shared && pwd)"
 python3 - <<'PY'
 import sys, os
 sys.path.insert(0, os.environ["SHARED_DIR"])
-import registry
-# registry.record_submission(...)
+
+import registry           # SQLite job registry
+import job_helpers        # resolve_job, run_koochainrun, slurm_queue_for, fail
+import scenario_builder   # build_single_angle_scenario, build_fullangle_scenario, deep_merge
 PY
 ```
 
-If you need a new shared helper:
+The `SHARED_DIR` env var is the standard way to locate `_shared/`. **Do not** hard-code
+absolute paths — different deployments mount the tree elsewhere.
 
-1. Decide whether it really needs to be shared (used by ≥ 2 tools).
-2. Add it to `_shared/` with a clear module-level docstring.
-3. Update this guide's §9 list.
-4. Avoid importing third-party packages — `_shared/` must work with stdlib only,
-   so it stays portable to ssh transport later.
+### 9.2 `registry.py` — SQLite job registry
+
+**DB path:** `/data/SmartTwinMCP/jobs.db` (auto-created on first call, WAL mode enabled).
+
+**Schema columns (read-only — don't ALTER the table from a tool):**
+
+| Column               | Type    | Notes                                                                          |
+|----------------------|---------|--------------------------------------------------------------------------------|
+| `id`                 | INTEGER | Primary key. **This is the `registry_id` other tools accept.**                 |
+| `submitted_at`       | INTEGER | Unix epoch seconds (set by `record_submission`).                               |
+| `tool_name`          | TEXT    | The tool that recorded this row, e.g. `"submit_lsdyna_job"`.                   |
+| `project_name`       | TEXT    | Free-form project label (often a subdir of `work_dir`).                        |
+| `work_dir`           | TEXT    | Absolute path where the job lives.                                             |
+| `output_dir`         | TEXT    | Absolute path where results land. Equal to `work_dir` for raw `.k`.            |
+| `runner_config_path` | TEXT    | Path to KooChainRun scenario JSON, if any.                                     |
+| `slurm_job_ids`      | TEXT    | JSON-encoded list of Slurm IDs (e.g. `'["12345", "12346"]'`).                  |
+| `sphere_job_id`      | TEXT    | Sphere postprocess Slurm ID, if any.                                           |
+| `num_angles`         | INTEGER | For multi-angle drop runs.                                                     |
+| `status`             | TEXT    | One of: `submitted`, `running`, `completed`, `failed`, `cancelled`, `dry_run`. |
+| `last_checked_at`    | INTEGER | Set by `update_status`.                                                        |
+| `notes`              | TEXT    | Free-form.                                                                     |
+| `user`               | TEXT    | Auto-set to `$USER` / `$LOGNAME`.                                              |
+| `extra`              | TEXT    | JSON blob for tool-specific data.                                              |
+
+`slurm_job_ids` and `extra` are stored as JSON strings but `registry.py` decodes them
+back to Python objects when reading. You write Python objects in, you read Python
+objects out.
+
+**Public functions:**
+
+```python
+def record_submission(
+    tool_name: str,
+    work_dir: str,
+    output_dir: str,
+    project_name: str | None = None,
+    runner_config_path: str | None = None,
+    slurm_job_ids: list[str] | None = None,
+    sphere_job_id: str | None = None,
+    num_angles: int | None = None,
+    status: str = "submitted",
+    notes: str | None = None,
+    extra: dict | None = None,
+) -> int:
+    """Insert a row. Returns the DB primary key (NOT a Slurm job ID).
+    Always include this `id` in your tool's JSON response as `registry_id`."""
+
+def list_recent(
+    limit: int = 20,
+    status: str | None = None,
+    tool: str | None = None,
+    since: int | None = None,       # filter by submitted_at >= since (epoch)
+    project_like: str | None = None, # SQL LIKE pattern, e.g. "drop%"
+    user: str | None = None,
+) -> list[dict]:
+    """Newest-first list with AND filters. Returns row dicts (JSON fields decoded)."""
+
+def get_by_id(job_id: int) -> dict | None:
+    """Fetch one row by primary key. Returns None if missing."""
+
+def update_status(job_id: int, status: str, notes: str | None = None) -> bool:
+    """Update status (and optionally notes). Sets last_checked_at to now.
+    Returns True if a row was updated."""
+
+def search(query: str, limit: int = 20) -> list[dict]:
+    """Case-insensitive LIKE search across project_name, work_dir, notes."""
+```
+
+**Conventions every tool that uses registry must follow:**
+
+- After submission, **always** return `{"registry_id": <id>, ...}` in your JSON
+  response. Downstream tools (`job_status`, `job_stop`, `job_logs`, ...) accept
+  `registry_id` as their primary lookup key.
+- On `dry_run`, still call `record_submission(..., status="dry_run")` so the user
+  can see what would have been submitted. Some tools skip this — they shouldn't.
+- Don't mutate rows from another tool's `tool_name` unless you're a status/lifecycle
+  tool. Use `extra` for your own scratch data.
+
+### 9.3 `job_helpers.py` — KooChainRun + Slurm wrappers
+
+Used by every `job_*` follow-up tool (`job_status`, `job_stop`, `job_rerun`,
+`job_collect`, `job_diagnose`, `job_postprocess`, `get_job_details`).
+
+```python
+KOOCHAINRUN = "/data/SmartTwinPreprocessor/bin/KooChainRun"
+
+def resolve_job(args: dict) -> dict | None:
+    """Look up a job by `registry_id` (preferred) or `work_dir` (fallback).
+    Returns the registry row dict, or None if not found.
+    YOUR tool's args.schema.json should accept BOTH keys (oneOf required)."""
+
+def fail(reason: str, **extra) -> NoReturn:
+    """Print {"ok": false, "reason": ..., **extra} to stdout and exit(1).
+    Use this everywhere instead of raising bare exceptions —
+    it keeps the JSON-stdout contract from §4.3."""
+
+def run_koochainrun(
+    subcommand: str,
+    *extra_args: str,
+    timeout: int = 300,
+) -> tuple[int, str, str]:
+    """Run `KooChainRun <subcommand> <args...>`. Returns (returncode, stdout, stderr).
+    Calls fail() if the KooChainRun binary is missing or times out.
+    Subcommands seen in existing tools: status, stop, rerun, collect, diagnose, postprocess."""
+
+def slurm_queue_for(slurm_job_ids: list[str]) -> dict:
+    """Run `squeue -j <ids>` and return {job_id: {state, name, reason}}.
+    Returns {} on any error (don't fail — caller decides what missing data means)."""
+```
+
+**Pattern** (look at any `job_*/script.sh` for the full version):
+
+```python
+args = json.loads(os.environ["STMC_ARGS_JSON"])
+job = job_helpers.resolve_job(args)
+if not job:
+    job_helpers.fail("job not found", lookup=args)
+
+rc, out, err = job_helpers.run_koochainrun("status", job["runner_config_path"])
+if rc != 0:
+    job_helpers.fail("KooChainRun failed", rc=rc, stderr=err)
+
+print(json.dumps({"ok": True, "tool": "...", "registry_id": job["id"], ...}))
+```
+
+### 9.4 `scenario_builder.py` — drop-test scenario JSON
+
+Used by `single_drop_simulation` and `fullangle_drop_simulation`. Builds the JSON
+config that KooChainRun consumes. If you're writing a new tool that produces a
+drop-test scenario, **always use these builders** — don't hand-roll the JSON.
+
+```python
+def build_single_angle_scenario(
+    project_name: str,
+    base_dir: str,
+    model_file: str,        # absolute path to .k template
+    lstc_ip: str,
+    roll_deg: float = 0.0,
+    pitch_deg: float = 0.0,
+    yaw_deg: float = 0.0,
+    height_mm: float = 1500,
+    t_final_s: float = 0.005,
+    ncpu: int = 1,
+    memory: str = "2G",
+    time_limit: str = "01:00:00",
+    drop_surface_type: str = "Plane",
+    extra_overrides: dict | None = None,   # Tier 2 — deep-merged on top
+) -> dict: ...
+
+def build_fullangle_scenario(
+    project_name: str,
+    base_dir: str,
+    model_file: str,
+    lstc_ip: str,
+    num_directions: int = 162,             # Fibonacci lattice density
+    height_mm: float = 1500,
+    t_final_s: float = 0.005,
+    ncpu: int = 2,
+    memory: str = "4G",
+    time_limit: str = "12:00:00",
+    drop_surface_type: str = "Plane",
+    enable_postprocess: bool = True,
+    auto_deep: bool = True,
+    auto_sphere: bool = True,
+    auto_deep_mode: str = "inline",        # "inline" | "separate_job"
+    yield_stress_mpa: float = 350,
+    sif_path_postprocessor: str | None = None,
+    extra_overrides: dict | None = None,
+) -> dict: ...
+
+def deep_merge(base: dict, overrides: dict | None) -> dict:
+    """Recursively merge `overrides` into `base`. Lists REPLACE; dicts merge.
+    Used internally by the builders, and exposed for tools that need to apply
+    user-supplied scenario overrides."""
+
+def write_scenario(scenario: dict, path: str) -> None:
+    """json.dump with indent=2. Makes parent dirs."""
+```
+
+### 9.5 Rules for adding a new helper to `_shared/`
+
+1. **Use threshold = 2.** Don't add to `_shared/` for a single tool; just inline.
+2. **stdlib only** — no `requests`, `httpx`, `numpy`. Helpers must stay portable
+   so they can eventually be inlined for ssh-transport tools (which don't have
+   access to `_shared/` on the remote host — see §6.2).
+3. **Module-level docstring** documenting every public function, with type hints.
+   This guide section §9 mirrors what's in the docstrings; if you change one,
+   change the other.
+4. **Update this guide's §9** to list the new module + its public API.
+5. **No state.** `_shared/` modules must not hold module-level mutable state
+   (caches, sessions, connection pools). Each tool invocation is hermetic.
 
 ---
 
@@ -561,6 +746,9 @@ Things that broke or almost broke the catalog. Don't repeat them.
 | Sourcing `_shared/registry.py` from a `ssh` transport     | Remote host doesn't have the file. Inline what you need.   |
 | Examples that don't validate against the schema           | LLM sees broken examples → broken calls.                   |
 | Reading args from positional `$1 $2 $3` in `script.sh`    | Contract is JSON in `$STMC_ARGS_JSON` / stdin. Use it.     |
+| Re-implementing SQLite logic (vs `_shared/registry.py`)   | Schema drifts; follow-up tools lose your jobs. See §9.2.   |
+| Raising exceptions instead of `job_helpers.fail(...)`     | Breaks JSON-stdout contract (§4.3). Use the helper.        |
+| Hand-rolling drop-test scenario JSON                      | `scenario_builder.build_*` already encodes the schema.     |
 
 ---
 
