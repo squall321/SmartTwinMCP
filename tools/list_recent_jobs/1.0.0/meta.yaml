@@ -35,7 +35,7 @@ description: |
   - registry_id를 get_job_details에 넘기면 풀 상세 (sphere job, notes 등)
   - work_dir를 job_status/job_stop/job_rerun에 넘기면 실시간 상태/제어
 tags: [registry, list, history, jobs, search]
-aliases: [recent_jobs, list_jobs, my_jobs, job_history]
+aliases: [recent_jobs, list_jobs, job_history]
 transport:
   kind: local
   shell: /bin/bash

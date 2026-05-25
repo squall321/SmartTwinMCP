@@ -189,15 +189,34 @@ def load_catalog(tools_root: Path) -> Catalog:
                 entry.is_latest = True
                 catalog.latest_by_name[name] = entry
             catalog.by_qualified[entry.qualified_name] = entry
-            for alias in entry.meta.aliases:
-                if alias in catalog.aliases:
-                    catalog.issues.append(
-                        CatalogIssue(entry.spec_dir, f"alias '{alias}' collides with another tool")
-                    )
-                elif entry.is_latest:
-                    catalog.aliases[alias] = entry
 
         catalog.versions_by_name[name] = sorted(version_entries.keys(), key=_version_key)
+
+    # Second pass: register aliases AFTER all tool names are known, so we can
+    # detect alias-vs-name shadowing and alias-vs-alias collisions in one place.
+    for entry in catalog.latest_by_name.values():
+        for alias in entry.meta.aliases:
+            if alias == entry.name:
+                continue  # self-alias is a no-op
+            if alias in catalog.latest_by_name:
+                catalog.issues.append(
+                    CatalogIssue(
+                        entry.spec_dir,
+                        f"alias '{alias}' shadows existing tool '{alias}' — "
+                        f"the tool wins on resolve(), the alias entry is ignored",
+                    )
+                )
+                continue
+            if alias in catalog.aliases:
+                catalog.issues.append(
+                    CatalogIssue(
+                        entry.spec_dir,
+                        f"alias '{alias}' collides with alias from "
+                        f"'{catalog.aliases[alias].name}'",
+                    )
+                )
+                continue
+            catalog.aliases[alias] = entry
 
     logger.info(
         "loaded %d tools (%d versions, %d issues) from %s",
