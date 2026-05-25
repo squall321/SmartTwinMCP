@@ -525,8 +525,10 @@ test -L tools/my_tool/latest && readlink tools/my_tool/latest
 # 6a. transport: local
 #     If your tool calls registry.record_submission(), ALWAYS set STMC_JOBS_DB
 #     to a tmpfile (§9.2) so verification rows don't leak into production.
+#     Replace the JSON below with your tool's actual minimal valid args.
+#     (Zero-arg tools: pass '{}'.)
 STMC_JOBS_DB=/tmp/test_jobs.db \
-STMC_ARGS_JSON='{"...minimal valid args..."}' \
+STMC_ARGS_JSON='{"message": "smoke test", "count": 1}' \
 bash tools/my_tool/1.0.0/script.sh | python3 -m json.tool
 #
 # 6b. transport: ssh
@@ -573,6 +575,18 @@ If any of these fail, **do not commit**. Fix first.
 > installed editable (`.venv/bin/pip install -e .` from repo root). The snippets
 > import from `smarttwin_mcp.catalog` and `smarttwin_mcp.runner` which only
 > resolve once the package is on the venv path.
+>
+> **`bash script.sh` skips JSON Schema validation.** Running the script directly
+> via `STMC_ARGS_JSON='...' bash script.sh` invokes your tool but does NOT
+> validate the args against `args.schema.json` — only the MCP server path
+> (`catalog_run` → `_validate_args`) does. If you need to verify that a bad-args
+> call is rejected (e.g. testing `anyOf` enforcement, the `maxItems` cap on a
+> list arg), use one of:
+>
+> - the in-memory `fastmcp.Client(server)` path from `tests/test_e2e_mcp_session.py`, or
+> - call `jsonschema.validate(args, entry.args_schema)` directly in your verifier.
+>
+> Don't conclude "the schema works" from a `bash script.sh` test alone.
 
 ---
 
@@ -580,10 +594,18 @@ If any of these fail, **do not commit**. Fix first.
 
 - Tool names live in a flat global namespace. `tools/job_status/` is `job_status`, period.
 - `aliases` in `meta.yaml` are alternative resolution keys for the **latest** version
-  of a tool. They share the same global namespace as tool names. The loader records
-  a `CatalogIssue` if two tools claim the same alias.
+  of a tool. They share the same global namespace as tool names. The loader
+  records a `CatalogIssue` and DROPS the alias in either of these collision
+  cases:
+  - **alias vs alias** — two different tools claim the same alias.
+  - **alias vs name** — an alias matches the primary name of another tool.
+    The actual tool wins on `resolve()`; the alias is ignored. (Added 2026-05
+    after a subagent test created `tools/my_jobs/` while
+    `list_recent_jobs.aliases` already had `my_jobs` — both ended up live and
+    the LLM had no signal they meant different things.)
 - A version-qualified name like `job_status@1.0.0` is always resolvable, regardless of
   aliases or which version is `latest`.
+- A `self-alias` (alias equal to the tool's own name) is a no-op, not an error.
 - Don't pick aliases that look like another tool's primary name. Future-you will get
   confused. Bad: alias `submit` (too generic). Good: alias `sbatch_lsdyna`.
 
@@ -635,9 +657,11 @@ absolute paths — different deployments mount the tree elsewhere.
 
 **DB path:** `/data/SmartTwinMCP/jobs.db` (auto-created on first call, WAL mode enabled).
 
-**Test override:** if the `STMC_JOBS_DB` env var is set at import time, `registry.py`
-uses that path instead. **Use this in §7 step 6 verification** to keep test runs
-out of the production registry:
+**Test override:** if the `STMC_JOBS_DB` env var is set **at the moment `registry`
+is first imported**, `registry.py` uses that path instead. Set the env var
+BEFORE the `import registry` line in your verification script — if you set it
+after, you'll silently hit production. **Use this in §7 step 6 verification**
+to keep test runs out of the production registry:
 
 ```bash
 STMC_JOBS_DB=/tmp/test_jobs.db STMC_ARGS_JSON='{...}' bash tools/my_tool/1.0.0/script.sh
@@ -1682,3 +1706,522 @@ Downstream tools will use it to `ack_inbound_webhook`.
 | Reuse `_shared/registry.py` for webhook rows           | Different DB and schema. Open `inbound_webhooks.db` directly.    |
 | Return raw `payload` as a string                       | JSON-decode it. The LLM shouldn't re-parse stdout JSON-in-JSON.  |
 | Block on a long `since` window with no limit           | Use the `limit` arg. The queue can grow unbounded.               |
+
+---
+
+## 18. Multi-tenant isolation
+
+The job registry has a `user` column (`registry.record_submission` auto-fills it
+with `$USER`/`$LOGNAME`). Most existing query tools ignore it. **Any new query,
+status, or mutation tool that the LLM might dispatch on a shared host MUST honor
+the calling user's identity** — otherwise user A's prompt can read or cancel
+user B's jobs.
+
+### 18.1 The contract
+
+Caller's identity is **always** `$USER` in the script's process environment.
+Do not accept `user` as a JSON arg — that would let the LLM impersonate. Do not
+read `$LOGNAME` as a fallback unless `$USER` is unset (very rare).
+
+```python
+caller = os.environ.get("USER") or os.environ.get("LOGNAME")
+if not caller:
+    job_helpers.fail("cannot determine caller identity (USER/LOGNAME unset)")
+```
+
+### 18.2 Three isolation modes — pick one in `meta.yaml.description`
+
+Document which mode your tool uses, near the top of the description, so the LLM
+and reviewers see it immediately. **In addition, declare the mode as a tag** so
+catalog audits can grep for it without reading prose:
+
+```yaml
+tags: [job, query, mode-own]     # one of: mode-own, mode-own-shared, mode-read-all
+description: |
+  **Isolation mode: own.** Only returns rows where `user == $USER`.
+  (rest of description...)
+```
+
+The `mode-*` tag is the machine-checkable signal. The description sentence
+is what the LLM reads.
+
+- **`mode: own`** — operate only on rows where `user == caller`. **Default for
+  any tool that mutates** (`job_stop`, `job_rerun`, `ack_inbound_webhook`).
+  Reject foreign rows with a hard `fail()` that says so explicitly.
+- **`mode: own+shared`** — operate on rows where `user == caller` OR
+  `extra` JSON has `"shared_with": [..., caller, ...]`. For tools that
+  legitimately need a hand-off mechanism. Sharing is opt-in via the submitting
+  tool, never automatic.
+- **`mode: read-all`** — read everything across users. **Only for purely
+  diagnostic / observability tools** (`list_recent_jobs` for an ops dashboard,
+  `sinfo`-style cluster status). Must NOT mutate. Each row in the response
+  MUST include the owner `user` so the LLM doesn't accidentally act on it.
+
+### 18.3 Filter pattern (`mode: own`)
+
+```python
+rows = registry.list_recent(limit=args.get("limit", 50), user=caller)
+# registry.list_recent's `user` filter is already there — use it, don't fetch
+# all rows and post-filter in Python.
+```
+
+For a single-row lookup, check ownership after resolve:
+
+```python
+job = job_helpers.resolve_job(args)
+if not job:
+    job_helpers.fail("job not found", lookup=args)
+if job.get("user") != caller and mode != "read-all":
+    job_helpers.fail(
+        "permission denied: job belongs to another user",
+        job_owner=job.get("user"),
+        caller=caller,
+    )
+```
+
+### 18.4 Args convention
+
+`mode: read-all` tools may accept an `owner` filter to narrow the view:
+
+```json
+{
+  "owner": {
+    "type": "string",
+    "description": "Filter results to a specific OS user. Omit to see all users.",
+    "pattern": "^[a-zA-Z_][a-zA-Z0-9_-]*$"
+  }
+}
+```
+
+`mode: own` and `mode: own+shared` tools **must not** expose any `owner`,
+`user`, or `as_user` arg — identity is from the environment, period.
+
+### 18.5 Response shape
+
+Every row returned (in any mode) MUST include the `user` field. Specifically:
+
+- `list_recent_jobs` and similar: `user` on each row.
+- `job_status`, `job_logs`, `get_job_details`: `owner: <user>` at the top level.
+
+This makes the multi-user view obvious to the LLM without it having to dig.
+
+**Auto-satisfied by `_shared/registry.py`:** `registry.list_recent(...)` and
+`registry.get_by_id(...)` already return the `user` column populated. If you
+build response rows from those helpers and don't strip fields, the §18.5 rule
+is met for free. The defensive `setdefault("user", None)` you sometimes see
+is belt-and-suspenders, not required.
+
+### 18.6 Anti-patterns
+
+| Don't                                              | Why                                                                 |
+|----------------------------------------------------|---------------------------------------------------------------------|
+| Accept `user` as a JSON arg                        | LLM can impersonate. Identity is `$USER` only.                      |
+| Use `mode: read-all` for any tool that writes      | A read-everything mutation tool is just a privilege-escalation bug. |
+| Forget to surface `owner` on response rows         | LLM can't tell whose job is whose, will pick wrong one.             |
+| Default to `read-all` instead of `own`             | "Show me my jobs" is the common case. Foreign-row access opt-in.    |
+| Filter in Python after `list_recent(limit=500)`    | Use `registry.list_recent(user=caller)` — it filters in SQL.        |
+
+---
+
+## 19. Long-running job progress (deriving %)
+
+`job_status` (the existing tool) returns `squeue` state per Slurm job and the
+KooChainRun status blob. Neither directly answers **"how far along is this run?"**
+A separate `job_progress` tool can derive a percentage from the on-disk output
+the runner produces, without polluting `job_status`'s contract.
+
+### 19.1 What the progress signal is
+
+For LS-DYNA / KooChainRun runs (the common case in this catalog), progress comes
+from one of three signals — pick the most reliable available:
+
+1. **KooChainRun status JSON.** Run `KooChainRun status <runner_config>` and
+   parse its `progress` field if present. This is the canonical source.
+2. **Completed angle / case directories.** A multi-angle run writes one subdir
+   per completed angle under `output_dir`. Count `output_dir/angle_*/d3plot`
+   vs the registered `num_angles`. Ratio = progress.
+3. **`d3hsp` / `mes0000` parsing.** If neither above works, parse the
+   LS-DYNA `mes0000` file for `current_time` lines and compare against the
+   scenario's `t_final_s`. Fragile — use only as last resort.
+
+**`completed == 0` is NOT a valid `completed_angles` signal.** When the angle
+counter is exactly zero, fall through to the queued/no-signal path instead of
+reporting `progress_pct: 0.0` with `signal_used: "completed_angles"` — the
+two cases are semantically different (queued vs running-but-no-output-yet) and
+the LLM should see that distinction. Same for signal 1: if KooChainRun returns
+a malformed or absent `progress` value, fall through; don't report 0.
+
+**KooChainRun status JSON shape varies.** Walk the response recursively for a
+numeric `progress` field. Normalize both 0..1 and 0..100 ranges to 0..100
+(`val > 1 → val`, else `val * 100`). Don't assume a fixed envelope path —
+KooChainRun versions differ.
+
+### 19.2 Mandatory args
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [{"required": ["registry_id"]}, {"required": ["work_dir"]}],
+  "properties": {
+    "registry_id": { "type": "integer", "minimum": 1 },
+    "work_dir": { "type": "string", "pattern": "^/.+" }
+  }
+}
+```
+
+Same lookup pattern as §3.4. Multi-tenant: `mode: own` per §18.2.
+
+### 19.3 Response shape
+
+```json
+{
+  "ok": true,
+  "tool": "job_progress",
+  "registry_id": 42,
+  "owner": "alice",
+  "progress_pct": 67.3,
+  "signal_used": "completed_angles",
+  "detail": {
+    "completed": 109,
+    "total": 162,
+    "latest_completed_at": 1716_400_000
+  },
+  "elapsed_sec": 4320,
+  "eta_sec": 2100,
+  "eta_confidence": "medium"
+}
+```
+
+Rules:
+
+- `progress_pct` is a float in `[0.0, 100.0]`, OR `null` (queued / no signal).
+- `signal_used` is one of `"koochainrun_status"`, `"completed_angles"`,
+  `"mes_time"`, or **`null`** when no signal was used (queued / unavailable).
+  Lets the LLM judge how trustworthy the value is.
+- `eta_sec` is **optional**. Only set when you can actually estimate it
+  (e.g. completed/total + elapsed). Set `eta_confidence` to
+  `low|medium|high|null` to reflect the variance. **Don't fabricate ETAs.**
+
+  Recommended confidence tiers based on signal sample size:
+
+  | completed angles | `eta_confidence` |
+  |------------------|------------------|
+  | >= 20            | `high`           |
+  | 5..19            | `medium`         |
+  | 1..4             | `low`            |
+  | 0                | `null` (no ETA)  |
+
+  Other signals (koochainrun_status, mes_time) get `low` by default unless the
+  source explicitly reports a confidence.
+- If you can't compute progress at all (no signal available), return
+  `progress_pct: null` with a `reason` field rather than guessing zero.
+  Same for the queued case: `progress_pct: 0` IS acceptable when you can
+  positively detect "Slurm has accepted it but no output yet" — pair with
+  `signal_used: null, reason: "queued"`.
+
+### 19.4 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Return `progress_pct: 0` when no signal is available   | Misleads the LLM into thinking the job is stuck. Use `null`.     |
+| Derive ETA from `current_time / t_final` alone         | LS-DYNA wall-clock per sim-second varies 100×. Use angle counts. |
+| Re-run `KooChainRun status` after `job_status` did     | Two invocations per LLM turn. Cache the first.                   |
+| Fail on missing `output_dir`                           | Job may be queued — return `progress_pct: 0` + reason "queued".  |
+
+---
+
+## 20. Batch cancel by filter
+
+`job_stop` cancels one job. **`batch_cancel_jobs`** cancels many by filter — but
+this is dangerous and needs guardrails. The default behavior MUST be `dry_run`.
+
+### 20.1 Mandatory `dry_run` default
+
+```json
+{
+  "dry_run": {
+    "type": "boolean",
+    "default": true,
+    "description": "If true (default), list the jobs that WOULD be cancelled but cancel nothing."
+  }
+}
+```
+
+`dry_run: false` actually cancels. Any LLM that wants to cancel without
+review must explicitly set this. Don't make it easy.
+
+### 20.2 Required filter — at least one MUST be set
+
+`additionalProperties: false` plus `anyOf` to force at least one filter:
+
+```json
+{
+  "anyOf": [
+    {"required": ["status"]},
+    {"required": ["tool_name"]},
+    {"required": ["project_like"]},
+    {"required": ["submitted_before"]},
+    {"required": ["registry_ids"]}
+  ],
+  "properties": {
+    "status": { "type": "string", "enum": ["submitted", "running", "pending"] },
+    "tool_name": { "type": "string" },
+    "project_like": { "type": "string", "description": "SQL LIKE pattern, e.g. 'doe_%'" },
+    "submitted_before": { "type": "integer", "description": "Unix epoch. Cancel jobs submitted before this time." },
+    "registry_ids": { "type": "array", "items": {"type": "integer"}, "maxItems": 500 },
+    "dry_run": { "type": "boolean", "default": true }
+  }
+}
+```
+
+**Calling with `{}` MUST be rejected by the schema** — `anyOf` does that. A
+"cancel everything" call requires explicit `{status: "running"}` or similar.
+
+**Why `dry_run` is NOT in the `anyOf`:** if it were, calling with just
+`{dry_run: true}` would satisfy the "at least one filter" requirement without
+actually picking any filter, defeating the guard. Keep `dry_run` in
+`properties` only — it gates side effects but never counts as a filter.
+
+### 20.3 Multi-tenant rule
+
+Always `mode: own` (§18.2). **A batch cancel that touches another user's jobs
+is a security issue, full stop.** Filter SQL by `user = caller` before applying
+any other filter.
+
+### 20.4 Result limit
+
+Hard cap the number of jobs you'll act on in a single call:
+
+```python
+MAX_BATCH = 100
+
+candidates = registry.list_recent(limit=MAX_BATCH + 1, user=caller, ...filters)
+if len(candidates) > MAX_BATCH:
+    job_helpers.fail(
+        f"batch too large: {len(candidates)} > {MAX_BATCH}. "
+        f"Narrow your filter (e.g. submitted_before) or chunk the request.",
+        candidates=len(candidates),
+    )
+```
+
+**Helper coverage caveat.** `registry.list_recent` supports SQL-side filters
+for `status`, `tool_name`, `project_like`, `user`, and `since` (>= epoch),
+but **not `submitted_before` (<= epoch)**. For that path, fetch a wider
+candidate set with the OTHER filters applied and post-filter in Python:
+
+```python
+if "submitted_before" in args:
+    raw = registry.list_recent(
+        limit=MAX_BATCH * 5 + 1,       # wider net to make the cap meaningful
+        user=caller, status=args.get("status"), tool=args.get("tool_name"),
+        project_like=args.get("project_like"),
+    )
+    candidates = [r for r in raw if r["submitted_at"] < args["submitted_before"]]
+    if len(candidates) > MAX_BATCH:
+        job_helpers.fail("batch too large", candidates=len(candidates))
+```
+
+The `registry_ids` path uses `registry.get_by_id` per id (no `list_recent`),
+so apply ownership check explicitly: `if row["user"] != caller: skip`.
+That's NOT the §18.3 anti-pattern — that anti-pattern is about Python
+post-filtering a `list_recent` dump for a query that has a SQL form. Per-id
+lookups have no SQL form for ownership, so per-row check is required.
+
+### 20.5 Response shape
+
+```json
+{
+  "ok": true,
+  "tool": "batch_cancel_jobs",
+  "dry_run": true,
+  "would_cancel": [
+    {"registry_id": 17, "tool_name": "submit_lsdyna_job", "slurm_job_ids": ["12345"]},
+    {"registry_id": 18, "tool_name": "submit_lsdyna_job", "slurm_job_ids": ["12346"]}
+  ],
+  "cancelled": [],
+  "failures": [],
+  "summary": {
+    "matched": 2,
+    "cancelled": 0,
+    "failed": 0,
+    "skipped_not_owner": 0
+  }
+}
+```
+
+When `dry_run: false`, populate `cancelled` and `failures`. `would_cancel` stays
+empty. Always include `summary` for the LLM to render to the user.
+
+**`skipped_not_owner` semantics:** this counter is only meaningful on the
+`registry_ids` path, where the caller explicitly named rows and some may
+belong to other users. On the SQL-filter paths (`status`, `tool_name`,
+`project_like`, `submitted_before`) the `user = caller` clause already filters
+foreign rows at the database layer, so `skipped_not_owner` is always 0 there.
+Emit it as 0 anyway for response-shape consistency — don't omit the key.
+
+### 20.6 Anti-patterns
+
+| Don't                                                   | Why                                                              |
+|---------------------------------------------------------|------------------------------------------------------------------|
+| `dry_run: false` as the default                         | One misfired tool call cancels everyone's work.                  |
+| Accept `{}` as "cancel everything"                      | Hostile to weak LLMs. Schema must reject. Use `anyOf`.           |
+| Skip `mode: own`                                        | Other users' jobs get nuked. Multi-tenant violation per §18.     |
+| No `MAX_BATCH` cap                                      | A bad filter hits 10k jobs and DOS's the scheduler.              |
+| Hide partial failures inside `ok: true`                 | Surface them in `failures` so the LLM can react.                 |
+
+---
+
+## 21. Slurm topology / partition status
+
+Read-only tools that wrap `sinfo`, `scontrol show node`, `scontrol show
+partition`. Pre-flight check tools — the LLM calls them before `submit_*` to
+make sure the chosen partition has live nodes with the requested resources.
+
+### 21.1 Tools in this category
+
+- `list_slurm_partitions` — `sinfo --format=...` summary per partition. Returns
+  partition name, state, total/idle/down nodes, default time limit.
+- `show_slurm_node` — `scontrol show node <name>` for one node. Returns
+  state, allocated/free CPUs/GPUs, current jobs.
+- `check_partition_capacity` — given `partition` + `gpus` + `nodes`, return
+  whether the requested resources are currently available. Used by submit
+  tools as a pre-flight.
+
+**All three are `mode: read-all` per §18.2 — they're observability.** No
+mutation, no user filtering.
+
+### 21.2 The Slurm command wrapper pattern
+
+Slurm output is **whitespace-delimited columnar text**, NOT JSON. The wrapper
+must format it before returning:
+
+```python
+import subprocess, json, os, sys
+
+def run_slurm(*args, timeout=15):
+    try:
+        r = subprocess.run(list(args), capture_output=True, text=True,
+                           timeout=timeout, check=False)
+    except FileNotFoundError:
+        job_helpers.fail(f"{args[0]} not on PATH — Slurm client not installed?")
+    except subprocess.TimeoutExpired:
+        job_helpers.fail(f"{args[0]} timed out after {timeout}s")
+    if r.returncode != 0:
+        job_helpers.fail(f"{args[0]} failed", rc=r.returncode, stderr=r.stderr[-500:])
+    return r.stdout
+```
+
+Use **`sinfo --format=...`** with explicit columns rather than the default — the
+default format is meant for human eyes and varies between Slurm versions:
+
+```python
+fmt = "%P|%a|%l|%D|%T|%C|%G"   # partition|avail|timelimit|nodes|state|cpus|gres
+out = run_slurm("sinfo", "-h", f"--format={fmt}")
+for line in out.strip().splitlines():
+    parts = line.split("|")
+    # ...
+```
+
+**`scontrol show node <name>`** returns key=value text — parse it with a tiny
+regex or a `dict(token.split("=", 1) for token in tokens)` over `re.split(r"\s+", ...)`.
+Don't trust whitespace inside values.
+
+### 21.3 Response shape (`list_slurm_partitions`)
+
+```json
+{
+  "ok": true,
+  "tool": "list_slurm_partitions",
+  "partitions": [
+    {
+      "name": "cpu",
+      "state": "up",
+      "default_time_limit": "1-00:00:00",
+      "nodes_total": 32,
+      "nodes_idle": 12,
+      "nodes_mixed": 18,
+      "nodes_allocated": 2,
+      "nodes_down": 0,
+      "gres_summary": null
+    },
+    {
+      "name": "gpu-a100",
+      "state": "up",
+      "default_time_limit": "8:00:00",
+      "nodes_total": 8,
+      "nodes_idle": 1,
+      "nodes_mixed": 5,
+      "nodes_allocated": 2,
+      "nodes_down": 0,
+      "gres_summary": "gpu:a100:8"
+    }
+  ]
+}
+```
+
+**Slurm state → bucket mapping** (use this exact table; don't invent your own):
+
+| Slurm state                              | Bucket            |
+|------------------------------------------|-------------------|
+| `idle`                                   | `nodes_idle`      |
+| `mixed`                                  | `nodes_mixed`     |
+| `allocated`, `completing`                | `nodes_allocated` |
+| everything else (see list below)         | `nodes_down`      |
+
+"Everything else" covers: `down`, `drain`, `draining`, `drained`, `fail`,
+`failing`, `maint`, `reserved`, `planned`, `power_down`, `unknown`, `future`,
+and any state not in the rows above. Rationale: from the LLM's perspective
+the only useful question is "can this node accept new work now" — anything
+that isn't idle/mixed/allocated/completing answers no.
+
+Strip trailing modifier characters (`*`, `~`, `#`, `%`, `$`, `@`) from the
+state column before bucketing — Slurm appends them to indicate special
+conditions (reboot pending, etc.) and they're orthogonal to the base state.
+
+**Partition name's trailing `*`** in the `%P` column marks Slurm's default
+partition. Strip it before reporting the name (`cpu*` → `cpu`); optionally
+add a `is_default: true` field if you want to surface it.
+
+**Multi-row `gres_summary`** — `sinfo` may produce several rows for one
+partition (one per state group), each potentially with different GRES. In
+practice they're identical; if they differ, take the first non-null/non-`"(null)"`
+value seen for that partition and stop. If you want to surface heterogeneity,
+add `gres_summary_others: [...]` rather than overloading the singular field.
+
+For `check_partition_capacity`, include a clear verdict:
+
+```json
+{
+  "ok": true,
+  "tool": "check_partition_capacity",
+  "request": {"partition": "gpu-a100", "gpus": 4, "nodes": 1},
+  "available_now": true,
+  "candidates": [{"node": "gpu03", "free_gpus": 4, "free_cpus": 32}],
+  "queue_depth": 3,
+  "hint": "1 node has the requested 4 GPUs free now. Expected start: immediate."
+}
+```
+
+### 21.4 Caching
+
+Slurm queries are cheap (single-digit ms) but can pile up. **Do not cache
+inside the tool.** Each invocation re-runs `sinfo`. Caching is the MCP
+client's job, not ours — we'd be lying about timeliness.
+
+**`include_down: false` edge case.** "Drop partitions where all nodes are
+down" means `nodes_total > 0 AND nodes_total == nodes_down`. An empty
+partition (`nodes_total == 0`, which `sinfo` can produce for a partition
+defined in `slurm.conf` but with no nodes assigned) is NOT "all down" —
+it's empty. Keep it in the response with explicit zero counts; let the LLM
+decide what to do.
+
+### 21.5 Anti-patterns
+
+| Don't                                                   | Why                                                              |
+|---------------------------------------------------------|------------------------------------------------------------------|
+| Parse `sinfo`'s default human format                    | Format changes between Slurm versions. Use `--format=...`.       |
+| Hard-fail when one partition is `down`                  | Report the down state; LLM and user need to know.                |
+| Mix `sinfo` and `squeue` into one tool                  | One concern per tool. Use `job_status` for squeue.               |
+| Add `mode: own` here                                    | This category is observability across the whole cluster.         |
+| Cache inside the tool                                   | LLM gets stale state. Let the client cache if it wants.          |

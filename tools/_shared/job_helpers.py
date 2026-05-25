@@ -18,7 +18,15 @@ KOOCHAINRUN = "/data/SmartTwinPreprocessor/bin/KooChainRun"
 
 
 def resolve_job(args: dict) -> dict | None:
-    """Look up job by registry_id or work_dir."""
+    """Look up job by registry_id or work_dir.
+
+    Returns the registry row dict on success, or None if not found.
+
+    Ambiguous work_dir: if more than one row matches the exact work_dir,
+    the FIRST (newest by submitted_at DESC) is returned silently. Callers
+    that care about ambiguity should query `registry.list_recent` directly
+    and decide policy.
+    """
     if "registry_id" in args:
         return registry.get_by_id(int(args["registry_id"]))
     if "work_dir" in args:
