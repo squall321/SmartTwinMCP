@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "batch_cancel_jobs args",
+  "type": "object",
+  "additionalProperties": false,
+  "anyOf": [
+    {"required": ["status"]},
+    {"required": ["tool_name"]},
+    {"required": ["project_like"]},
+    {"required": ["submitted_before"]},
+    {"required": ["registry_ids"]}
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["submitted", "running", "pending"],
+      "description": "Cancel only jobs in this status. One of: submitted, running, pending."
+    },
+    "tool_name": {
+      "type": "string",
+      "description": "Cancel only jobs recorded by this tool_name (e.g. 'submit_lsdyna_job')."
+    },
+    "project_like": {
+      "type": "string",
+      "description": "SQL LIKE pattern matched against project_name (e.g. 'doe_%')."
+    },
+    "submitted_before": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch seconds. Cancel jobs whose submitted_at < this value."
+    },
+    "registry_ids": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "minItems": 1,
+      "maxItems": 500,
+      "description": "Explicit list of registry primary keys to cancel."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true (default), list jobs that WOULD be cancelled but cancel nothing. Set false to actually scancel."
+    }
+  }
+}

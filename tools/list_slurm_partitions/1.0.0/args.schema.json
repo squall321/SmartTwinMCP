@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_slurm_partitions args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "partition_filter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact-match partition name. If set, only that partition is returned. Omit to list all partitions."
+    },
+    "include_down": {
+      "type": "boolean",
+      "default": true,
+      "description": "If false, drop partitions where every node is in a down/drain state (nodes_total == nodes_down). Default true."
+    }
+  }
+}

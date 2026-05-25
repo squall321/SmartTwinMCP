@@ -1,0 +1,73 @@
+name: job_progress
+version: 1.0.0
+summary: 진행 중인 잡의 0..100 percent 진행률을 on-disk 신호로 추정.
+description: |
+  레지스트리에서 잡을 찾아 long-running 잡의 진행률(`progress_pct`, 0..100)을
+  on-disk 신호로 추정한다. `job_status`(squeue + KooChainRun status 메타데이터)와
+  달리, 이 도구는 **사용자가 보고 싶어하는 "얼마나 끝났어?"** 에 직접 답하는 게
+  목적이다. AGENT_GUIDE §19 의 참조 구현.
+
+  # Multi-tenant
+  - mode: own — 호출자(`$USER`)의 잡만 조회 가능. 다른 사용자의 잡은
+    `permission denied` 로 거절.
+
+  # Signal priority (§19.1)
+  1. `KooChainRun status <runner_config>` 의 JSON `progress` 필드.
+     레지스트리에 `runner_config_path` 가 있고 KooChainRun 바이너리가 존재할 때.
+  2. `<output_dir>/angle_*/d3plot` 파일 개수 ÷ `num_angles`.
+     멀티-앵글 드롭 시뮬에서 가장 안정적인 신호.
+  3. `<work_dir>/mes0000` (또는 `d3hsp`) 의 `current time` 라인 파싱.
+     fragile, 최후의 수단.
+
+  # Special cases (§19.4)
+  - output_dir 가 비어있고 로그 파일도 없으면 `progress_pct: 0`, `reason: "queued"`.
+  - 어떤 신호도 사용할 수 없으면 `progress_pct: null`, `reason: <설명>`.
+
+  # When to call this
+  - 사용자가 "지금 몇 % 끝났어?", "ETA?", "얼마나 남았어?" 라고 물을 때.
+  - 멀티-앵글 드롭 시뮬(`fullangle_drop_simulation`) 의 중간 진행 상황 확인.
+
+  # Distinguish from similar tools
+  - job_progress vs job_status: job_status 는 squeue/KooChainRun raw 상태 메타.
+    퍼센트(%) 가 필요하면 job_progress.
+  - job_progress vs job_logs: job_logs 는 로그 텍스트 tail. 진행률 숫자가 필요하면
+    job_progress.
+
+  # Pre-conditions
+  - 잡이 레지스트리에 존재해야 함.
+  - 호출자(`$USER`) 가 잡 소유자여야 함.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "job_progress",
+    "registry_id": 42,
+    "owner": "alice",
+    "progress_pct": 67.3,
+    "signal_used": "completed_angles",
+    "detail": { "completed": 109, "total": 162 },
+    "elapsed_sec": 4320,
+    "eta_sec": 2100,
+    "eta_confidence": "medium"
+  }
+  ```
+
+  신호 없음 / 큐잉 중인 경우:
+  ```json
+  { "ok": true, "tool": "job_progress", "registry_id": 42, "owner": "alice",
+    "progress_pct": 0, "signal_used": null, "reason": "queued" }
+  ```
+tags: [progress, eta, percent, jobs, status, koochainrun, drop, fullangle]
+aliases: [progress, job_percent, percent_done]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 60
+expose: catalog
+examples:
+  - title: registry_id 로 진행률 조회
+    args: {registry_id: 42}
+  - title: work_dir 로 진행률 조회
+    args: {work_dir: /data/koopark/fullangle_test}
+    note: 다른 사용자의 잡이면 permission denied. 큐잉 중이면 progress_pct=0, reason=queued.

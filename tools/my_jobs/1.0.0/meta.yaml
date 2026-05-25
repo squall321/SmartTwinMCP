@@ -1,0 +1,63 @@
+name: my_jobs
+version: 1.0.0
+summary: List jobs owned by the calling OS user (mode -own multi-tenant query).
+description: |
+  mode: own — returns ONLY rows where `user == $USER` (the calling OS user's
+  identity, taken from `$USER` / `$LOGNAME` in the script environment, NEVER
+  from a JSON arg). This is the §18 reference implementation of multi-tenant
+  isolation against the shared `/data/SmartTwinMCP/jobs.db` registry.
+
+  Each returned row carries the `user` field so the LLM can confirm ownership
+  at a glance (§18.5). The tool does NOT accept any `user` / `owner` /
+  `as_user` arg — that would let the LLM impersonate (§18.6 anti-pattern).
+
+  # When to call this
+  - "Show me my jobs", "what did I submit recently?"
+  - LLM needs to scope a follow-up action (stop, rerun, status) to jobs the
+    caller actually owns
+  - Multi-tenant host where `list_recent_jobs` would mix in other users' rows
+
+  # Distinguish from similar tools
+  - `my_jobs` vs `list_recent_jobs`: `my_jobs` is hard-scoped to `$USER` and
+    has no opt-out. `list_recent_jobs` has `only_mine: true` by default but
+    can read across users. Prefer `my_jobs` whenever the request is
+    explicitly about "my" / "I submitted".
+  - `my_jobs` is read-only. For details on one row, follow up with
+    `get_job_details` (passing `registry_id`).
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` must be set in the environment (always true under
+    sshd / login shells; will hard-fail if both are missing).
+  - The registry DB exists at `/data/SmartTwinMCP/jobs.db` (auto-created on
+    first submit by any `submit_*` tool).
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "my_jobs",
+    "caller": "alice",
+    "count": 2,
+    "jobs": [
+      {
+        "id": 42, "user": "alice", "tool_name": "submit_lsdyna_job",
+        "submitted_at": 1716500000, "status": "submitted",
+        "work_dir": "/data/alice/case_x", "output_dir": "/data/alice/case_x",
+        "slurm_job_ids": ["100"], "...": "..."
+      }
+    ]
+  }
+  ```
+tags: [registry, jobs, multi-tenant, own, query]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: my last 20 jobs (default)
+    args: {}
+  - title: my running jobs only
+    args: {status: running, limit: 50}
+  - title: my fullangle drop jobs since a given epoch
+    args: {tool_name: fullangle_drop_simulation, since: 1716000000, limit: 100}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "my_jobs args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 20,
+      "description": "Maximum number of rows to return (newest first)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["submitted", "running", "completed", "failed", "cancelled", "dry_run"],
+      "description": "Filter to a single job lifecycle state."
+    },
+    "tool_name": {
+      "type": "string",
+      "description": "Filter to jobs submitted by a specific tool (e.g. 'submit_lsdyna_job', 'fullangle_drop_simulation')."
+    },
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch seconds. Returns rows with submitted_at >= since."
+    }
+  }
+}
