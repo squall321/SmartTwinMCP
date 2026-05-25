@@ -59,6 +59,29 @@
       "description": "Tier 2 고급 옵션. scenario_full_reference tool에서 가능한 키 확인 가능. 예: {\"postprocess\":{\"sphere_memory\":\"32G\",\"section_view_axes\":[\"x\",\"y\",\"z\"]}, \"scenarios\":[{\"tolerance\":{\"doe_type\":\"lhs\",\"doe_count\":50}}]}",
       "additionalProperties": true
     },
+    "sequential": {
+      "type": "boolean",
+      "default": false,
+      "description": "Sequential mode: 노드당 1잡씩, 그 안에서 여러 DOE 순차 실행. 대형 모델/안전 추구 시 true."
+    },
+    "partition": {
+      "type": "string",
+      "description": "Slurm partition 이름 명시. 미지정 시 sinfo 자동 선택. 'list'=탐색 모드. GPU 자동 제외, STMC_PARTITION_EXCLUDE env로 추가 제외 가능."
+    },
+    "submit_cli_overrides": {
+      "type": "object",
+      "description": "Advanced. KooChainRun submit CLI flag override (auto-tune 덮어쓰기). scenario_full_reference section='submit_cli' 참조.",
+      "additionalProperties": true,
+      "properties": {
+        "nodes": {"type": "integer", "minimum": 1, "maximum": 100},
+        "jobs_per_node": {"type": "integer", "minimum": 1, "maximum": 64},
+        "ncpu_per_job": {"type": "integer", "minimum": 1, "maximum": 256},
+        "memory": {"type": "string", "pattern": "^[0-9]+[GM]$"},
+        "time_limit": {"type": "string", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+        "submit_mode": {"type": "string", "enum": ["cumulative", "large-scale"]},
+        "data_root": {"type": "string", "pattern": "^/.+"}
+      }
+    },
     "dry_run": {"type": "boolean", "default": false}
   }
 }

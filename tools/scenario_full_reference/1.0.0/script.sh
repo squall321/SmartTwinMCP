@@ -8,6 +8,37 @@ import json, os, sys
 # Hardcoded reference — extracted by auditing Runner/CumulativeDesigner.py and
 # Runner/AngleSourceParser.py in pyKooCAE repo. Keep in sync with KooChainRun upgrades.
 
+SUBMIT_CLI_SCHEMA = {
+    "_description": (
+        "KooChainRun 'submit' CLI 옵션. single_drop_simulation/fullangle_drop_simulation의 "
+        "`submit_cli_overrides` 인자로 전달하면 auto-tune 결과를 override합니다. "
+        "auto-tune은 sinfo로 partition/nodes/jobs_per_node를 자동 계산하므로 "
+        "특별한 이유 없으면 override 불필요."
+    ),
+    "submit_mode": {
+        "type": "string", "enum": ["cumulative", "large-scale"], "default": "cumulative",
+        "_note": "cumulative=DOE별 sbatch 1개씩, large-scale=LargeScaleDOEManager 배열 잡",
+    },
+    "nodes": {"type": "integer", "default": "(auto-tune)", "_note": "사용할 노드 수"},
+    "jobs_per_node": {"type": "integer", "default": "(auto-tune)", "_note": "노드당 동시 잡 수"},
+    "ncpu_per_job": {"type": "integer", "default": "(auto-tune)", "_note": "잡당 CPU. environment.ncpu와 별개 (이건 submit 시 override)"},
+    "partition": {"type": "string", "default": "(auto-tune)", "_note": "submit_cli_overrides에 넣지 말고 top-level partition 인자로. 'list'면 탐색 모드"},
+    "memory": {"type": "string", "pattern": "^[0-9]+[GM]$", "default": "(env.memory)", "_note": "submit 시 sbatch 메모리 override"},
+    "time_limit": {"type": "string", "pattern": "^HH:MM:SS$", "default": "24:00:00"},
+    "data_root": {"type": "string", "default": "/data"},
+    "sequential": {
+        "type": "boolean", "default": False,
+        "_note": "이건 submit_cli_overrides 안이 아니라 top-level `sequential` 인자로 전달. 노드당 1잡씩 + 잡 안에서 여러 DOE 순차 실행 (안전 모드).",
+    },
+    "_auto_tune_algorithm": (
+        "sinfo로 partition 자동 발견 → "
+        "score=idle_nodes*100 + cpus_per_node + default_bonus(10)로 ranking → "
+        "최고 점수 partition 선택. GPU partition은 Gres로 자동 제외. "
+        "STMC_PARTITION_EXCLUDE='name1,name2' env로 추가 제외 가능. "
+        "sinfo 실패 시 KooChainRun default(nodes=2, jobs_per_node=4) fallback."
+    ),
+}
+
 FULL_SCHEMA = {
     "project_name": {"type": "string", "default": "CumulativeProject"},
     "base_dir": {"type": "string", "description": "Absolute path. scenario.json/runner_config.json/output/ live here."},
@@ -237,12 +268,14 @@ EXAMPLES = [
 def main():
     args = json.loads(os.environ.get("STMC_ARGS_JSON", "{}"))
     section = args.get("section", "all")
+    # Combine scenario.json schema + submit CLI schema
+    combined = {**FULL_SCHEMA, "submit_cli": SUBMIT_CLI_SCHEMA}
     if section == "all":
-        out_schema = FULL_SCHEMA
-    elif section in FULL_SCHEMA:
-        out_schema = {section: FULL_SCHEMA[section]}
+        out_schema = combined
+    elif section in combined:
+        out_schema = {section: combined[section]}
     else:
-        print(json.dumps({"ok": False, "reason": f"Unknown section '{section}'. Valid: all, {', '.join(FULL_SCHEMA.keys())}"}))
+        print(json.dumps({"ok": False, "reason": f"Unknown section '{section}'. Valid: all, {', '.join(combined.keys())}"}))
         sys.exit(1)
 
     print(json.dumps({

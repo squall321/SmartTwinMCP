@@ -10,6 +10,7 @@ import json, os, sys, shutil, subprocess, re
 sys.path.insert(0, os.environ["SHARED_DIR"])
 from scenario_builder import build_fullangle_scenario, write_scenario
 import registry
+import auto_tune
 
 KOOCHAINRUN = "/data/SmartTwinPreprocessor/bin/KooChainRun"
 
@@ -40,6 +41,9 @@ def main():
     drop_surface_type = args.get("drop_surface_type", "Plane")
     sif_post = args.get("sif_path_postprocessor")
     extra_overrides = args.get("extra_scenario_overrides")
+    sequential = bool(args.get("sequential", False))
+    partition_arg = args.get("partition")
+    submit_overrides = args.get("submit_cli_overrides") or {}
     project_name = args.get("project_name") or f"Fullangle_Fib{num_angles}"
     dry_run = bool(args.get("dry_run", False))
 
@@ -88,18 +92,57 @@ def main():
 
     output_dir = os.path.join(work_dir, "output")
 
+    # Auto-tune partition + nodes/jobs_per_node based on num_angles
+    tune = auto_tune.auto_tune_submit(
+        num_angles=num_angles,
+        user_partition=partition_arg,
+        user_ncpu=submit_overrides.get("ncpu_per_job") or ncpu,
+    )
+
+    # partition=list: discovery-only
+    if tune["partition_discovery"].get("discovery_only"):
+        print(json.dumps({
+            "ok": True, "discovery_only": True,
+            "available_partitions": tune["partition_discovery"]["all_partitions"],
+            "hint": "Pick a partition name and re-call with partition='<name>'.",
+        }, ensure_ascii=False, default=str))
+        return
+
+    submit_args = [KOOCHAINRUN, "submit", runner_config_path]
+    cli = {}
+    if tune.get("applied") or tune.get("fallback_used"):
+        if tune.get("nodes"):          cli["--nodes"] = str(tune["nodes"])
+        if tune.get("jobs_per_node"):  cli["--jobs-per-node"] = str(tune["jobs_per_node"])
+        if tune.get("ncpu_per_job"):   cli["--ncpu-per-job"] = str(tune["ncpu_per_job"])
+        if tune.get("partition"):      cli["--partition"] = tune["partition"]
+    override_map = {
+        "nodes": "--nodes", "jobs_per_node": "--jobs-per-node",
+        "ncpu_per_job": "--ncpu-per-job", "memory": "--memory",
+        "time_limit": "--time-limit", "submit_mode": "--mode",
+        "data_root": "--data-root",
+    }
+    for k, flag in override_map.items():
+        if k in submit_overrides:
+            cli[flag] = str(submit_overrides[k])
+    if "partition" in submit_overrides:
+        cli["--partition"] = submit_overrides["partition"]
+    for flag, val in cli.items():
+        submit_args.extend([flag, val])
+    if sequential:
+        submit_args.append("--sequential")
+
     slurm_ids = []
     sphere_job_id = None
     status = "dry_run"
     if not dry_run:
         try:
             r = subprocess.run(
-                [KOOCHAINRUN, "submit", runner_config_path],
-                capture_output=True, text=True, timeout=600, check=True,
+                submit_args, capture_output=True, text=True, timeout=600, check=True,
             )
         except subprocess.CalledProcessError as e:
             fail(f"KooChainRun submit failed: rc={e.returncode}",
-                 stderr=e.stderr[-1000:], stdout=e.stdout[-1000:])
+                 stderr=e.stderr[-1000:], stdout=e.stdout[-1000:],
+                 submit_args=submit_args)
         for line in r.stdout.splitlines():
             m = re.search(r"submitted \(job (\d+)\)", line)
             if m:
@@ -146,6 +189,18 @@ def main():
         "auto_deep_mode": auto_deep_mode,
         "expected_runtime_hours": round(expected_runtime_hours, 1),
         "sphere_report_path": os.path.join(output_dir, "sphere_report.html"),
+        "submit_cli_used": " ".join(submit_args[2:]),
+        "auto_tune": {
+            "applied": tune.get("applied"),
+            "fallback_used": tune.get("fallback_used"),
+            "partition": tune.get("partition"),
+            "nodes": tune.get("nodes"),
+            "jobs_per_node": tune.get("jobs_per_node"),
+            "ncpu_per_job": tune.get("ncpu_per_job"),
+            "reason": tune.get("reason"),
+            "partition_selected_reason": tune["partition_discovery"].get("selected_reason"),
+            "excluded_partitions": tune["partition_discovery"].get("excluded", []),
+        },
         "follow_up_hint": (
             "Use registry_id or work_dir with job_status/job_stop/job_diagnose/"
             "job_postprocess/job_collect. sphere_report.html is the final aggregate output."

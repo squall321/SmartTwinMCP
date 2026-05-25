@@ -39,3 +39,5 @@ examples:
     args: {section: tolerance}
   - title: postprocess 섹션만
     args: {section: postprocess}
+  - title: submit CLI 옵션 (auto-tune override 시 사용)
+    args: {section: submit_cli}
