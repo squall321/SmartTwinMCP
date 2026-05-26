@@ -240,31 +240,71 @@ def _suggest(query: str, catalog: Catalog, k: int = 5) -> list[str]:
     return [n for n, _ in sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))[:k]]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="smarttwin-mcp")
-    parser.add_argument(
+def _add_serve_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
         "--tools-root",
         default=os.environ.get("STMC_TOOLS_ROOT", "./tools"),
         help="Path to the tools/ directory (default: ./tools or $STMC_TOOLS_ROOT).",
     )
-    parser.add_argument(
+    p.add_argument(
         "--transport",
         choices=["stdio", "sse"],
         default=os.environ.get("STMC_MCP_TRANSPORT", "stdio"),
         help="MCP transport to expose the server on.",
     )
-    parser.add_argument("--log-level", default=os.environ.get("STMC_LOG_LEVEL", "INFO"))
-    args = parser.parse_args()
 
+
+def _cmd_serve(args) -> int:
+    tools_root = Path(args.tools_root).resolve()
+    server = build_server(tools_root)
+    server.run(transport=args.transport)
+    return 0
+
+
+def _cmd_lint(args) -> int:
+    from .lint import lint
+    tools_root = Path(args.tools_root).resolve()
+    disable = set(args.disable.split(",")) if args.disable else set()
+    report = lint(tools_root, disable=disable)
+    print(report.render())
+    return 0 if report.passed() else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="smarttwin-mcp")
+    parser.add_argument("--log-level", default=os.environ.get("STMC_LOG_LEVEL", "INFO"))
+
+    sub = parser.add_subparsers(dest="cmd")
+
+    serve_p = sub.add_parser("serve", help="Run the MCP server (default).")
+    _add_serve_args(serve_p)
+
+    lint_p = sub.add_parser("lint", help="Check the catalog for guide-rule violations.")
+    lint_p.add_argument(
+        "tools_root",
+        nargs="?",
+        default=os.environ.get("STMC_TOOLS_ROOT", "./tools"),
+        help="Path to the tools/ directory (default: ./tools).",
+    )
+    lint_p.add_argument(
+        "--disable",
+        default="",
+        help="Comma-separated list of rule IDs to skip (e.g. L022,L040).",
+    )
+
+    # Backwards-compat: bare `smarttwin-mcp` (no subcommand) acts like `serve`.
+    _add_serve_args(parser)
+
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    tools_root = Path(args.tools_root).resolve()
-    server = build_server(tools_root)
-    server.run(transport=args.transport)
+    if args.cmd == "lint":
+        return _cmd_lint(args)
+    return _cmd_serve(args)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
