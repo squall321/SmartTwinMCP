@@ -1,0 +1,79 @@
+name: fetch_job_output
+version: 1.0.0
+summary: Move a completed job's output files (d3plot, mes0000, etc) off the cluster.
+description: |
+  **Isolation mode: own.** Only operates on jobs where `user == $USER` (§18.2).
+
+  Looks up a job by `registry_id` (preferred) or `work_dir` (fallback), then
+  moves matched output files to a destination chosen by the caller. Three
+  modes per §23.1:
+
+  - `local`: caller is on the same filesystem. Verify each matched file
+    exists, return absolute paths. No copy.
+  - `rsync`: pull files to `rsync_target` using `rsync -av --partial --progress`.
+    Works for local-path targets and `user@host:/path` URLs.
+  - `presigned_url`: out-of-scope for this build — requires the storage
+    sidecar (see §17 pattern). Returns ok:false with a clear reason.
+
+  # When to call this
+  - User says "give me d3plot for job 42", "download mes0000 from this run",
+    "rsync the output to /scratch/local".
+  - After the job is `completed` (or at least has output on disk). This tool
+    does NOT check job status — it just moves files. Call `job_status` first
+    if you need the running/completed distinction.
+
+  # Distinguish from similar tools
+  - fetch_job_output vs job_collect: job_collect runs KooChainRun's collect
+    step (writes simulation_index.json etc) but doesn't move data off the
+    cluster. fetch_job_output is the actual download / hand-off step.
+  - fetch_job_output vs job_logs: job_logs returns text tails inline. Use
+    fetch_job_output when you want the binary artifacts (d3plot, restart
+    files, mes0000) onto the user's host.
+
+  # Pre-conditions
+  - Job row exists in the registry and belongs to `$USER`.
+  - `output_dir` exists on the shared filesystem.
+  - For `rsync`: `rsync` is on PATH; the target path is writable (local) or
+    reachable via passwordless ssh (remote).
+
+  # Hard limits
+  - `max_total_bytes` (default 50 GB) is a hard cap. The size check runs
+    BEFORE any transfer; oversized requests fail cleanly with concrete bytes
+    in the response. Narrow `files` or raise the cap to proceed.
+
+  # Returns
+  ```json
+  {
+    "ok": true, "tool": "fetch_job_output", "registry_id": 42,
+    "owner": "alice", "destination": "rsync",
+    "rsync_target": "/scratch/local/case42",
+    "files_transferred": 18, "bytes_transferred": 4823423109,
+    "duration_sec": 38.2, "rsync_log_tail": "..."
+  }
+  ```
+tags: [download, results, rsync, fetch, mode-own]
+aliases: [download_job_output, pull_job_output]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 3600
+expose: catalog
+examples:
+  - title: local verify (no copy)
+    args:
+      registry_id: 42
+      destination: local
+      files: ["d3plot*"]
+  - title: rsync to local scratch dir
+    args:
+      registry_id: 42
+      destination: rsync
+      rsync_target: /scratch/alice/case42
+      files: ["d3plot*", "mes0000"]
+    note: rsync_target must exist (or be createable by rsync). Uses -av --partial --progress.
+  - title: presigned_url placeholder (will fail until sidecar deployed)
+    args:
+      registry_id: 42
+      destination: presigned_url
+      files: ["d3plot*"]
+    note: Returns ok:false; storage sidecar is not in this repo.

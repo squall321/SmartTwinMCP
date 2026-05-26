@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job_logs_mpi args",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [
+    {"required": ["registry_id"]},
+    {"required": ["work_dir"]}
+  ],
+  "properties": {
+    "registry_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Primary key of the job row in the SmartTwin job registry (preferred lookup)."
+    },
+    "work_dir": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute work_dir of the job. Used as fallback when registry_id is not known."
+    },
+    "ranks": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": -1},
+      "description": "Which ranks to return. Unset (default) → representative heuristic (rank 0 + up to 3 ranks matching highlight). Use [-1] to mean 'all detected ranks'. Otherwise, explicit list of rank IDs."
+    },
+    "lines": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5000,
+      "default": 200,
+      "description": "Number of trailing lines to keep per rank. Default 200, max 5000."
+    },
+    "highlight": {
+      "type": "string",
+      "enum": ["errors", "ncc", "oom", "none"],
+      "default": "errors",
+      "description": "Filter class used by the representative heuristic and per-rank match. 'errors' = ERROR/Traceback/CUDA_ERROR/RuntimeError/Exception; 'ncc' = NCCL WARN/ERROR; 'oom' = OOM / 'out of memory' / 'cuda ... out of memory'; 'none' = no filter (only rank 0 auto-selected)."
+    }
+  }
+}

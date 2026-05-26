@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fetch_job_output args",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [
+    {"required": ["registry_id"]},
+    {"required": ["work_dir"]}
+  ],
+  "properties": {
+    "registry_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "DB primary key from the job registry (preferred lookup)."
+    },
+    "work_dir": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute path to the job's work directory (fallback if registry_id unknown)."
+    },
+    "files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": ["d3plot*"],
+      "description": "Filename globs relative to output_dir. e.g. ['d3plot*', 'mes0000']. Default: ['d3plot*']."
+    },
+    "destination": {
+      "type": "string",
+      "enum": ["local", "rsync", "presigned_url"],
+      "description": "Where to put the files. 'local' = verify+return paths (no copy). 'rsync' = rsync -av --partial --progress to rsync_target. 'presigned_url' = upload to S3-compatible bucket (sidecar required, NOT deployed yet)."
+    },
+    "rsync_target": {
+      "type": "string",
+      "description": "Required when destination=rsync. Absolute path on the caller's host or rsync URL like 'user@host:/path'."
+    },
+    "max_total_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776,
+      "default": 53687091200,
+      "description": "Hard cap on total bytes transferred. Default 50GB. Fails BEFORE transfer if exceeded."
+    }
+  }
+}

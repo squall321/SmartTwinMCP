@@ -1,0 +1,95 @@
+name: job_logs_mpi
+version: 1.0.0
+summary: 멀티-랭크 MPI 잡 로그를 rank-tagged tail 로 반환 (representative ranks 우선).
+description: |
+  레지스트리에서 잡을 찾아 멀티-랭크 MPI 출력을 파싱하고, 16~수백 개 랭크의
+  tail 을 통째로 쏟지 않고 **대표 랭크 (rank 0 + 에러를 친 가장 낮은 랭크들)**
+  만 골라서 rank-tagged tail 로 반환한다. AGENT_GUIDE §24 의 참조 구현.
+
+  **Isolation mode: own.** 호출자(`$USER`)의 잡만 조회 가능.
+
+  # When to call this
+  - 멀티-노드 MPI 잡(`submit_distributed_train`, `train_pytorch_gpu` 등 §16 류)이
+    실패/이상 동작 시 "어느 랭크가 죽었어?", "rank 0 로그 보여줘", "NCCL 워닝 있어?",
+    "OOM 친 랭크 찾아줘" 같은 요청.
+  - `job_logs` 가 단일 stream tail 로 충분치 않은 경우 (랭크 구조 손실).
+
+  # Distinguish from similar tools
+  - job_logs_mpi vs job_logs: job_logs 는 `lsdyna.slurm.out/err` 의 flat tail.
+    멀티-랭크 출력의 rank 구조가 필요하면 job_logs_mpi.
+  - job_logs_mpi vs job_diagnose: job_diagnose 는 KooChainRun 진단 결과.
+    원본 per-rank 로그가 보고 싶으면 job_logs_mpi.
+
+  # Source format detection (§24.1, priority order)
+  1. **per_rank_file**: `<work_dir>/rank.<N>.log` 패턴이 존재하면 이걸 사용.
+  2. **labeled**: `<work_dir>/slurm.out` (또는 `lsdyna.slurm.out`) 의 비어있지 않은
+     라인 중 80% 이상이 `^\d+:` prefix 면 srun --label 출력으로 간주.
+  3. **unlabeled**: 위 둘 다 아니면 grep 기반 inference 로 fallback. 본문 내
+     `\b(rank|RANK|MPI_RANK)[=: ]\s*(\d+)\b` 매칭 라인만 랭크 태깅, 나머지는 'unknown'.
+
+  검출된 포맷은 응답의 `source_format` 필드에 항상 포함된다.
+
+  # Representative rank heuristic (§24.3)
+  `ranks` 인자가 명시되지 않으면:
+  1. 항상 rank 0 (orchestrator).
+  2. `highlight` regex 에 매칭되는 랭크 중, 서로 다른 error signature 마다 최저
+     rank ID 를, 최대 3개까지.
+  3. `highlight: "none"` 이면 rank 0 만 자동 선택.
+
+  명시적으로 `ranks: [-1]` 을 주면 검출된 모든 랭크 반환.
+
+  # Highlight regexes (§24.2)
+  - `errors` (기본): `(?i)(ERROR|Traceback|CUDA_ERROR|RuntimeError|Exception)`
+  - `ncc`:    `(?i)NCCL\s+(WARN|ERROR)`
+  - `oom`:    `(?i)(out of memory|OOM|cuda.+out of memory)`
+  - `none`:   필터 없음
+
+  # Pre-conditions
+  - 잡이 레지스트리에 존재해야 함.
+  - 호출자(`$USER`) 가 잡 소유자여야 함.
+  - per-rank 출력이 (a) `rank.<N>.log` 파일이거나 (b) `srun --label` 로 prefix 가
+    찍혔거나 (c) 본문에 rank 태그가 포함되어 있어야 의미 있는 응답이 나온다.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "job_logs_mpi",
+    "registry_id": 42,
+    "owner": "alice",
+    "total_ranks_detected": 16,
+    "source_format": "per_rank_file",
+    "ranks": [
+      {
+        "rank": 0,
+        "representative": true,
+        "because": "orchestrator",
+        "log_path": "/data/work/rank.0.log",
+        "tail": ["..."],
+        "matched_highlight": false
+      },
+      {
+        "rank": 7,
+        "representative": true,
+        "because": "first rank matching highlight: 'CUDA out of memory'",
+        "log_path": "/data/work/rank.7.log",
+        "tail": ["..."],
+        "matched_highlight": true,
+        "highlight_signature": "CUDA out of memory"
+      }
+    ]
+  }
+  ```
+tags: [logs, tail, mpi, multi-rank, jobs, debug, nccl, oom, mode-own]
+aliases: [mpi_logs, rank_logs]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 60
+expose: catalog
+examples:
+  - title: registry_id 로 대표 랭크 조회 (기본 errors 하이라이트)
+    args: {registry_id: 42}
+  - title: 모든 랭크 반환 + OOM 하이라이트 + 500줄
+    args: {work_dir: /data/koopark/dist_train_01, ranks: [-1], lines: 500, highlight: oom}
+    note: ranks=[-1] 은 검출된 모든 랭크 반환. 큰 응답이 될 수 있으니 보통 생략 권장.
