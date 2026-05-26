@@ -4,10 +4,12 @@ summary: 잡의 모든 Slurm 작업 취소 (KooChainRun stop).
 description: |
   레지스트리에서 잡 찾아서 KooChainRun stop 호출. 모든 관련 Slurm 작업(시뮬+sphere+deep)을 scancel.
   raw .k 잡은 슬럼 ID 기반 scancel 직접 호출.
-tags: [stop, cancel, scancel, jobs]
+tags: [stop, cancel, scancel, jobs, mode-own]
 aliases: [stop, cancel, kill]
 transport: {kind: local, shell: /bin/bash, timeout_sec: 30}
 expose: direct
 examples:
   - title: registry_id
     args: {registry_id: 42}
+  - title: work_dir fallback (registry_id 모를 때)
+    args: {work_dir: /data/koopark/fullangle_test}

@@ -5,10 +5,10 @@
   "additionalProperties": false,
   "required": ["work_dir", "lstc_license_ip"],
   "properties": {
-    "work_dir": {"type": "string", "pattern": "^/.+"},
-    "model_file": {"type": "string", "default": "MinimumModel.k"},
-    "model_file_path": {"type": "string", "pattern": "^/.+\\.k$"},
-    "lstc_license_ip": {"type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"},
+    "work_dir": {"type": "string", "pattern": "^/.+", "description": "Absolute path to the job work directory. Scenario/runner_config/output land here."},
+    "model_file": {"type": "string", "default": "MinimumModel.k", "description": "Model .k 파일 이름 (work_dir 안에 있어야 함). Default 'MinimumModel.k'."},
+    "model_file_path": {"type": "string", "pattern": "^/.+\\.k$", "description": "Model .k 파일 절대경로. 지정 시 work_dir로 자동 복사."},
+    "lstc_license_ip": {"type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$", "description": "LSTC license server IPv4 address."},
     "num_angles": {
       "type": "integer",
       "default": 162,
@@ -16,11 +16,11 @@
       "maximum": 10000,
       "description": "Fibonacci lattice 방향 수. 표준=162, 빠른 검증=5~50."
     },
-    "drop_height_mm": {"type": "number", "default": 1500, "minimum": 1, "maximum": 50000},
-    "simulation_time_s": {"type": "number", "default": 0.005, "minimum": 1e-06, "maximum": 10},
-    "ncpu": {"type": "integer", "default": 2, "minimum": 1, "maximum": 64},
-    "memory": {"type": "string", "default": "4G", "pattern": "^[0-9]+[GM]$"},
-    "time_limit": {"type": "string", "default": "12:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+    "drop_height_mm": {"type": "number", "default": 1500, "minimum": 1, "maximum": 50000, "description": "낙하 높이 (mm). Default 1500."},
+    "simulation_time_s": {"type": "number", "default": 0.005, "minimum": 1e-06, "maximum": 10, "description": "시뮬레이션 종료 시간 (초). Default 0.005."},
+    "ncpu": {"type": "integer", "default": 2, "minimum": 1, "maximum": 64, "description": "잡당 CPU 수. Default 2."},
+    "memory": {"type": "string", "default": "4G", "pattern": "^[0-9]+[GM]$", "description": "Slurm memory (e.g. '4G', '512M'). Default '4G'."},
+    "time_limit": {"type": "string", "default": "12:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$", "description": "Slurm walltime limit, HH:MM:SS. Default '12:00:00'."},
     "enable_postprocess": {
       "type": "boolean",
       "default": true,
@@ -42,18 +42,19 @@
       "default": "inline",
       "description": "inline=시뮬+deep 같은 Slurm Job. separate_job=시뮬 노드 즉시 해방, deep을 별도 잡으로."
     },
-    "yield_stress_mpa": {"type": "number", "default": 350, "minimum": 1},
+    "yield_stress_mpa": {"type": "number", "default": 350, "minimum": 1, "description": "재료 항복응력 (MPa). 후처리 deep_report 임계값. Default 350."},
     "drop_surface_type": {
       "type": "string",
       "enum": ["Plane", "PlaneGraded", "RigidWall", "PlanewithRoughness"],
-      "default": "Plane"
+      "default": "Plane",
+      "description": "낙하 표면 종류. Plane=평면, PlaneGraded=구배, RigidWall=리지드월, PlanewithRoughness=거친 평면."
     },
     "sif_path_postprocessor": {
       "type": "string",
       "pattern": "^/.+\\.sif$",
       "description": "후처리 SIF 절대경로. default는 compute node /opt/apptainers/SmartTwinPostprocessor.sif."
     },
-    "project_name": {"type": "string"},
+    "project_name": {"type": "string", "description": "프로젝트 라벨 (레지스트리 표시용). 미지정 시 'Fullangle_Fib<N>' 자동 생성."},
     "extra_scenario_overrides": {
       "type": "object",
       "description": "Tier 2 고급 옵션. scenario_full_reference tool에서 가능한 키 확인 가능. 예: {\"postprocess\":{\"sphere_memory\":\"32G\",\"section_view_axes\":[\"x\",\"y\",\"z\"]}, \"scenarios\":[{\"tolerance\":{\"doe_type\":\"lhs\",\"doe_count\":50}}]}",
@@ -82,6 +83,6 @@
         "data_root": {"type": "string", "pattern": "^/.+"}
       }
     },
-    "dry_run": {"type": "boolean", "default": false}
+    "dry_run": {"type": "boolean", "default": false, "description": "true면 scenario/runner_config만 생성하고 Slurm 제출은 건너뜀. Default false."}
   }
 }

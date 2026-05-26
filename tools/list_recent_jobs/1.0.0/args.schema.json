@@ -4,14 +4,16 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 500},
+    "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 500, "description": "최대 반환 행 수. Default 20."},
     "status": {
       "type": "string",
-      "enum": ["submitted", "running", "completed", "failed", "cancelled", "dry_run"]
+      "enum": ["submitted", "running", "completed", "failed", "cancelled", "dry_run"],
+      "description": "Job status로 필터링. submitted/running/completed/failed/cancelled/dry_run."
     },
     "tool": {
       "type": "string",
-      "enum": ["single_drop_simulation", "fullangle_drop_simulation", "submit_lsdyna_job"]
+      "enum": ["single_drop_simulation", "fullangle_drop_simulation", "submit_lsdyna_job"],
+      "description": "특정 tool이 기록한 잡만 필터링."
     },
     "since_hours_ago": {
       "type": "number",

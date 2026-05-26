@@ -48,7 +48,7 @@ description: |
     "summary": {"matched": 1, "cancelled": 0, "failed": 0, "skipped_not_owner": 0}
   }
   ```
-tags: [batch, cancel, scancel, jobs, cleanup]
+tags: [batch, cancel, scancel, jobs, cleanup, mode-own]
 aliases: []
 transport:
   kind: local

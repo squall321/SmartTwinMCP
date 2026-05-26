@@ -73,7 +73,7 @@ description: |
     "mpi": {"nodes": 2, "ntasks_per_node": 8, "mpi_fabric": "auto", "total_ranks": 16}
   }
   ```
-tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml, distributed, multinode, mpi, ddp, nccl]
+tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml, distributed, multinode, mpi, ddp, nccl, mode-own]
 aliases: [submit_ddp_train, multinode_pytorch]
 transport:
   kind: local

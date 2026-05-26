@@ -47,7 +47,7 @@ description: |
     - work_dir 생성 실패 (권한)
     - 모델 파일 .k 없음
     - LSTC IP 잘못 (submit는 성공해도 시뮬 5초만에 fail — log 확인 필요)
-tags: [lsdyna, drop_test, simulation, slurm, koochainrun, single, manual_angle]
+tags: [lsdyna, drop_test, simulation, slurm, koochainrun, single, manual_angle, mode-own]
 aliases: [drop_single, single_angle_drop, manual_drop]
 transport:
   kind: local

@@ -18,7 +18,7 @@ description: |
   # Output
   Returns a JSON object with `job_id`, `partition`, `submitted_at`. The job_id
   is what every other tool (status, cancel, logs) expects.
-tags: [job, submit, slurm, cluster, simulation]
+tags: [job, submit, slurm, cluster, simulation, mode-own]
 aliases: [run_job, launch]
 transport:
   kind: local

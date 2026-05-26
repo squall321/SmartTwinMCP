@@ -52,7 +52,7 @@ description: |
     "gpu": {"gpus": 2, "gpu_type": "a100", "gpu_partition": "gpu-a100"}
   }
   ```
-tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml]
+tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml, mode-own]
 aliases: [submit_pytorch_train, pytorch_sbatch]
 transport:
   kind: local

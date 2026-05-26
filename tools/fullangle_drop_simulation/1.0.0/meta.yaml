@@ -45,7 +45,7 @@ description: |
     "follow_up_hint": "..."
   }
   ```
-tags: [lsdyna, drop_test, simulation, slurm, koochainrun, fibonacci, fullangle, postprocess]
+tags: [lsdyna, drop_test, simulation, slurm, koochainrun, fibonacci, fullangle, postprocess, mode-own]
 aliases: [fullangle, fibonacci_drop, drop_162, all_angles_drop]
 transport:
   kind: local

@@ -13,3 +13,5 @@ expose: direct
 examples:
   - title: registry_id
     args: {registry_id: 42}
+  - title: work_dir fallback (registry_id 모를 때)
+    args: {work_dir: /data/koopark/fullangle_test}

@@ -37,7 +37,7 @@ description: |
     "status": "submitted" | "dry_run"
   }
   ```
-tags: [lsdyna, simulation, slurm, sbatch, raw, kfile]
+tags: [lsdyna, simulation, slurm, sbatch, raw, kfile, mode-own]
 aliases: [submit_kfile, raw_lsdyna, sbatch_lsdyna]
 transport:
   kind: local
