@@ -482,6 +482,15 @@ exit 1
 
 ## 7. Validation checklist (do this before saying "done")
 
+**Shortcut for steps 1-5:** `smarttwin-mcp lint tools/`. This runs the
+automated subset of the checklist below (catalog load, name/version match,
+schema validity, examples, exec bits, latest symlink, expose distribution,
+mode tags, hard-coded secrets). CI gates PRs on it. **Step 6 (end-to-end
+run) still requires you to actually execute the tool** — the lint can't
+exercise transport-specific paths or domain logic.
+
+Manual checklist (what `smarttwin-mcp lint` automates + what it doesn't):
+
 Run from the repo root:
 
 ```bash

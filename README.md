@@ -116,9 +116,21 @@ python3 -m venv .venv
 Tests:
 
 ```bash
-.venv/bin/pip install pytest
+.venv/bin/pip install pytest pytest-asyncio
 .venv/bin/pytest tests/ -q
 ```
+
+Lint the catalog (automates [AGENT_GUIDE.md](tools/AGENT_GUIDE.md) §7 steps 1-5
+plus per-§ rule checks). Exit code is non-zero if any rule errors:
+
+```bash
+.venv/bin/smarttwin-mcp lint tools/
+
+# skip individual rules with --disable (comma-separated rule IDs)
+.venv/bin/smarttwin-mcp lint tools/ --disable L022,L040
+```
+
+CI runs both on every PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 Wire it into Claude Code (or any MCP client) by pointing at the `smarttwin-mcp` command.
 
