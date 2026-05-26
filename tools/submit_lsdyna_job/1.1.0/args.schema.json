@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "submit_lsdyna_job args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["k_file", "lstc_license_ip"],
+  "properties": {
+    "k_file": {
+      "type": "string",
+      "pattern": "^/.+\\.k$",
+      "description": "Absolute path to LS-DYNA .k input file. Output (d3plot) lands in its parent directory."
+    },
+    "lstc_license_ip": {"type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$", "description": "LSTC license server IPv4 address."},
+    "ncpu": {"type": "integer", "default": 1, "minimum": 1, "maximum": 64, "description": "잡당 CPU 수 (lsdyna MPP rank). Default 1."},
+    "memory": {"type": "string", "default": "2G", "pattern": "^[0-9]+[GM]$", "description": "Slurm memory (e.g. '2G', '512M'). Default '2G'."},
+    "time_limit": {"type": "string", "default": "01:00:00", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$", "description": "Slurm walltime limit, HH:MM:SS. Default '01:00:00'."},
+    "lsdyna_memory_words": {
+      "type": "string",
+      "default": "2000m",
+      "description": "LS-DYNA internal 'memory=' setting (m suffix)."
+    },
+    "partition": {"type": "string", "description": "Slurm partition 이름. 미지정 시 cluster default 사용."},
+    "job_name": {"type": "string", "description": "Slurm --job-name. 미지정 시 .k 파일 stem에서 자동 생성."},
+    "lsdyna_sif": {
+      "type": "string",
+      "default": "/opt/apptainers/LSDynaBasic_aocc420_ompi4.0.5_mpp_s.sif",
+      "description": "Absolute path to LS-DYNA Apptainer SIF on compute nodes."
+    },
+    "dry_run": {"type": "boolean", "default": false, "description": "true면 sbatch 스크립트만 생성, 실제 제출은 건너뜀. Default false."}
+  }
+}

@@ -1,0 +1,110 @@
+name: submit_distributed_train
+version: 1.1.0
+summary: Submit a multi-node multi-GPU PyTorch distributed training job to Slurm via srun + apptainer.
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  Builds an sbatch wrapper for distributed PyTorch training across multiple
+  compute nodes, each with multiple GPUs. The wrapper uses `srun --mpi=pmix`
+  to launch one rank per GPU per node and sets the right NCCL + MPI fabric
+  env vars so collectives (all-reduce, etc.) work across the cluster
+  interconnect. Defaults to `dry_run: true` — renders and writes the sbatch
+  script without submitting.
+
+  # When to call this
+  - User wants to train a PyTorch model across >= 2 nodes (DDP / FSDP /
+    Megatron / DeepSpeed) on a Slurm GPU partition.
+  - User already has a self-contained training script (.py) that handles
+    `torch.distributed.init_process_group` (rank/world_size come from the
+    Slurm-injected env vars: SLURM_PROCID, SLURM_NTASKS, etc.).
+
+  # When NOT to call this
+  - Single-node training (1 node, 1+ GPUs) → `train_pytorch_gpu`. This tool
+    REJECTS `nodes=1` outright (does not branch to a single-node fast path).
+  - CPU-only training or no GPUs → not supported. This tool is purpose-built
+    GPU-only and REJECTS `gpus=0`.
+  - LS-DYNA MPP (CPU-only) → `submit_lsdyna_job`.
+
+  # Distinguish from similar tools
+  - submit_distributed_train vs train_pytorch_gpu:
+    `train_pytorch_gpu` is single-node, single sbatch task (`--ntasks=1`),
+    no MPI launcher, no fabric env. `submit_distributed_train` requires
+    `nodes >= 2`, sets `--exclusive`, uses `--mem-per-cpu`, launches via
+    `srun --mpi=pmix`, and emits NCCL + MPI fabric env vars (§16.4).
+
+  # Pre-conditions
+  - `train_script` exists on disk (absolute path, .py).
+  - `work_dir` exists and is writable (sbatch stdout/stderr land here as
+    `train.slurm.out` / `train.slurm.err`).
+  - `apptainer_sif` exists on the compute nodes (default
+    `/opt/apptainers/pytorch_cuda12.sif`).
+  - `nodes >= 2`, `gpus >= 1`, `gpu_partition` set.
+
+  # Behavior
+  1. Cross-validate: reject `nodes < 2` and `gpus < 1`. Require `gpu_partition`.
+  2. Build multi-node sbatch directives per §16.2:
+     `--nodes`, `--ntasks-per-node`, `--cpus-per-task`, `--mem-per-cpu`,
+     `--exclusive`, `--gres=gpu:<type>:<gpus>` (per-node).
+  3. Render NCCL env vars (§16.4) and MPI fabric env vars based on `mpi_fabric`.
+  4. Launch with `srun --mpi=pmix apptainer exec --nv ...`.
+  5. Write `<work_dir>/train.sbatch` and (unless `dry_run`) call `sbatch`.
+  6. Record submission in registry with §14.4 GPU fields + §16.5 MPI fields
+     in `extra`. Always include `total_ranks = nodes * ntasks_per_node`.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "registry_id": 42,
+    "tool": "submit_distributed_train",
+    "work_dir": "/data/.../run01",
+    "sbatch_path": "/data/.../run01/train.sbatch",
+    "slurm_job_ids": ["12345"],
+    "status": "submitted" | "dry_run",
+    "total_ranks": 16,
+    "sbatch_params": {
+      "partition": "gpu-a100",
+      "nodes": 2,
+      "ntasks_per_node": 8,
+      "gres": "a100:8",
+      "cpus_per_task": 8,
+      "mem_per_cpu": "4G",
+      "time_limit": "08:00:00"
+    },
+    "gpu": {"gpus": 8, "gpu_type": "a100", "gpu_partition": "gpu-a100"},
+    "mpi": {"nodes": 2, "ntasks_per_node": 8, "mpi_fabric": "auto", "total_ranks": 16}
+  }
+  ```
+tags: [pytorch, training, gpu, slurm, sbatch, apptainer, ml, distributed, multinode, mpi, ddp, nccl, mode-own]
+aliases: [submit_ddp_train, multinode_pytorch]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 60
+expose: catalog
+examples:
+  - title: minimal dry_run — 2 nodes x 8 GPUs (A100)
+    args:
+      train_script: /data/koopark/ml/train_ddp.py
+      work_dir: /data/koopark/ml/run01
+      nodes: 2
+      ntasks_per_node: 8
+      gpus: 8
+      gpu_type: a100
+      gpu_partition: gpu-a100
+  - title: 4 nodes x 8 H100, real submission with extra args
+    args:
+      train_script: /data/koopark/ml/train_ddp.py
+      work_dir: /data/koopark/ml/run01
+      apptainer_sif: /opt/apptainers/pytorch_cuda12.sif
+      extra_args: ["--epochs", "50", "--batch-size", "256", "--fsdp"]
+      nodes: 4
+      ntasks_per_node: 8
+      mpi_fabric: ucx
+      gpus: 8
+      gpu_type: h100
+      gpu_partition: gpu-h100
+      time_limit: "24:00:00"
+      mem_per_cpu: 8G
+      dry_run: false
+    note: dry_run=false actually submits to Slurm. Confirm with user first.

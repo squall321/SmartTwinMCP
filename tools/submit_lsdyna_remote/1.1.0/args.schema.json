@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "submit_lsdyna_remote args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["k_file", "lstc_license_ip"],
+  "properties": {
+    "k_file": {
+      "type": "string",
+      "pattern": "^/.+\\.k$",
+      "description": "Absolute path to LS-DYNA .k input file on the SHARED filesystem (must be readable from the remote head at the same path). Output (d3plot) lands in its parent directory."
+    },
+    "lstc_license_ip": {
+      "type": "string",
+      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+      "description": "IPv4 of the LSTC license server reachable from compute nodes."
+    },
+    "ncpu": {
+      "type": "integer",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 64,
+      "description": "MPP ranks. Drives --cpus-per-task and mpirun -n."
+    },
+    "memory": {
+      "type": "string",
+      "default": "2G",
+      "pattern": "^[0-9]+[GM]$",
+      "description": "Slurm --mem (e.g. '2G', '512M')."
+    },
+    "time_limit": {
+      "type": "string",
+      "default": "01:00:00",
+      "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$",
+      "description": "Slurm --time (HH:MM:SS)."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true (default), only writes the sbatch script and records a 'dry_run' registry row. No sbatch submission. Set false to actually submit."
+    }
+  }
+}

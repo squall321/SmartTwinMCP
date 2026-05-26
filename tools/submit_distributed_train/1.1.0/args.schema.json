@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "submit_distributed_train args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["train_script", "work_dir", "nodes", "ntasks_per_node", "gpus", "gpu_partition"],
+  "properties": {
+    "train_script": {
+      "type": "string",
+      "pattern": "^/.+\\.py$",
+      "description": "Absolute path to the PyTorch training script (.py). Must exist on disk. Script must initialize torch.distributed using Slurm env vars (SLURM_PROCID, SLURM_NTASKS, etc.)."
+    },
+    "work_dir": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute path to the working directory. sbatch stdout/stderr land here as train.slurm.{out,err}. Must exist and be writable."
+    },
+    "apptainer_sif": {
+      "type": "string",
+      "pattern": "^/.+\\.sif$",
+      "default": "/opt/apptainers/pytorch_cuda12.sif",
+      "description": "Absolute path to the apptainer (singularity) image containing PyTorch + CUDA + NCCL on the compute nodes."
+    },
+    "extra_args": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": [],
+      "description": "Extra positional/flag arguments forwarded verbatim to the training script (e.g. ['--epochs', '50'])."
+    },
+    "time_limit": {
+      "type": "string",
+      "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$",
+      "default": "08:00:00",
+      "description": "Slurm --time value (HH:MM:SS)."
+    },
+    "mem_per_cpu": {
+      "type": "string",
+      "pattern": "^[0-9]+[GM]$",
+      "default": "4G",
+      "description": "Slurm --mem-per-cpu (e.g. '4G', '512M'). Multi-node uses --mem-per-cpu, not --mem (see §16.2)."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true (default), render and write the sbatch script but do NOT submit. Set false to actually submit."
+    },
+    "nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "default": 1,
+      "description": "Number of compute nodes. THIS TOOL REQUIRES nodes >= 2 (single-node training should use train_pytorch_gpu)."
+    },
+    "ntasks_per_node": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128,
+      "default": 1,
+      "description": "MPI ranks per node. For 1-rank-per-GPU PyTorch DDP/FSDP, set equal to gpus (per node)."
+    },
+    "mpi_fabric": {
+      "type": "string",
+      "enum": ["auto", "ofi", "ucx", "tcp"],
+      "default": "auto",
+      "description": "MPI transport fabric. 'auto' = OFI (verbs,tcp) which works on most clusters. Force tcp only as a fallback when the high-performance fabric misbehaves."
+    },
+    "gpus": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8,
+      "default": 0,
+      "description": "Number of GPUs PER NODE. THIS TOOL REQUIRES gpus >= 1 (it is purpose-built GPU; CPU-only is not supported)."
+    },
+    "gpu_type": {
+      "type": "string",
+      "enum": ["a100", "h100", "rtx4090", "any"],
+      "default": "any",
+      "description": "GPU model selector. Maps to Slurm --gres=gpu:<type>:N. Use 'any' to skip the type filter."
+    },
+    "gpu_partition": {
+      "type": "string",
+      "enum": ["gpu-a100", "gpu-h100", "gpu-mixed"],
+      "description": "Slurm partition. Required (this tool only targets GPU partitions)."
+    }
+  }
+}

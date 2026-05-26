@@ -1,0 +1,81 @@
+name: fullangle_drop_simulation
+version: 1.1.0
+summary: Fibonacci N방향 전각도 LS-DYNA 낙하 + 자동 후처리 (KooChainRun + KooD3plotReader).
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  KooChainRun + Fibonacci lattice로 N방향 (default 162) 낙하 시뮬을 prepare → submit하고,
+  자동으로 KooD3plotReader 후처리(deep_report per case + sphere_report 통합)도 트리거합니다.
+
+  # 언제 호출하는가
+  - "162각도 전각도 낙하 돌려줘", "fibonacci 100방향 떨어뜨려"
+  - 표준 프로덕션 잡 (모든 방향에서 어떻게 떨어지는지 통계)
+  - sphere_report.html (Mollweide projection) 만들고 싶을 때
+
+  # 다른 tool과 구분
+  - 한 각도만 → `single_drop_simulation`
+  - raw .k 파일 (낙하 아닌 일반 잡) → `submit_lsdyna_job`
+
+  # 사전 조건
+  - `/data/SmartTwinPreprocessor/bin/KooChainRun` 설치
+  - compute node에 `/opt/apptainers/SmartTwinPostprocessor.sif` (후처리용 SIF)
+  - `work_dir` + 모델 .k 파일 (또는 `model_file_path` 지정)
+
+  # 동작 (4단계)
+  1. fibonacci_lattice N방향 + postprocess block 포함 scenario.json 생성
+  2. KooChainRun prepare → runner_config.json + sphere_report.sh
+  3. dry_run=true면 여기서 stop. false면 KooChainRun submit → Slurm jobs N개 + sphere dependent job
+  4. /data/SmartTwinMCP/jobs.db에 기록 (num_angles=N, sphere_job_id 포함)
+
+  # auto_deep_mode 옵션
+  - "inline" (default): 시뮬 + deep_report 같은 Slurm Job ID (잡 카운트 절약)
+  - "separate_job": deep_report가 별도 Slurm 잡으로 분리 (시뮬 노드 빨리 해방, 큐 회전 빠름)
+
+  # 반환
+  ```json
+  {
+    "ok": true,
+    "registry_id": 42,
+    "tool": "fullangle_drop_simulation",
+    "work_dir": "...",
+    "output_dir": ".../output",
+    "slurm_job_ids": ["100","101",...],     # N개
+    "sphere_job_id": "262",                  # 후처리 dependent job
+    "num_angles": 162,
+    "status": "submitted" | "dry_run",
+    "expected_runtime_hours": 4,
+    "follow_up_hint": "..."
+  }
+  ```
+tags: [lsdyna, drop_test, simulation, slurm, koochainrun, fibonacci, fullangle, postprocess, mode-own]
+aliases: [fullangle, fibonacci_drop, drop_162, all_angles_drop]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 300
+expose: direct
+examples:
+  - title: 표준 162각도 (dry_run)
+    args:
+      work_dir: /data/koopark/fullangle_test
+      model_file: MinimumModel.k
+      lstc_license_ip: 192.168.122.1
+      dry_run: true
+  - title: 50각도 빠른 검증
+    args:
+      work_dir: /data/koopark/fib50
+      model_file: MinimumModel.k
+      lstc_license_ip: 192.168.122.1
+      num_angles: 50
+      dry_run: true
+  - title: separate_job 모드 + 큰 모델 (실제 submit)
+    args:
+      work_dir: /data/koopark/production_fib162
+      model_file_path: /home/koopark/models/my_part.k
+      lstc_license_ip: 192.168.122.1
+      num_angles: 162
+      auto_deep_mode: separate_job
+      ncpu: 4
+      memory: 8G
+      time_limit: "24:00:00"
+      dry_run: false

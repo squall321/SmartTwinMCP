@@ -1,0 +1,66 @@
+name: batch_cancel_jobs
+version: 1.1.0
+summary: Cancel multiple jobs matched by a filter. Default dry_run. Caller-scoped (mode=own).
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  Cancel many jobs in one call by filter. Safety-first: `dry_run` defaults to true,
+  the schema rejects empty `{}` (at least one filter is required), batches are
+  hard-capped at 100, and the tool ONLY touches jobs owned by the calling user.
+
+  **Multi-tenant mode: own (§18).** Filter is always ANDed with `user = $USER`
+  before any other condition. Foreign rows are invisible and unreachable through
+  this tool — there is no `owner`/`as_user` arg.
+
+  # When to call this
+  - User asks to cancel "all my submitted jobs", "all jobs in project foo_*", etc.
+  - Cleanup after a bad sweep of submissions.
+  - DO NOT use for a single known job → use `job_stop` (it understands
+    KooChainRun stop too; this tool only does `scancel`).
+
+  # Filters (at least one MUST be set — schema enforced by anyOf)
+  - `status`: one of submitted | running | pending
+  - `tool_name`: exact match against the tool that recorded the job
+  - `project_like`: SQL LIKE on project_name (e.g. 'doe_%')
+  - `submitted_before`: unix epoch; cancel jobs older than this
+  - `registry_ids`: explicit list, max 500
+
+  # Pre-conditions
+  - Jobs must already be recorded in `/data/SmartTwinMCP/jobs.db`.
+  - `scancel` must be on PATH when `dry_run: false`.
+
+  # Behavior
+  - `dry_run: true` (default): populates `would_cancel`, does NOT call scancel.
+  - `dry_run: false`: calls `scancel` for each match, populates `cancelled` /
+    `failures`. Registry status is set to `cancelled` for any job that scancel
+    accepted (rc=0).
+  - Hard cap MAX_BATCH=100. Wider filters → fail with a hint to narrow.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "batch_cancel_jobs",
+    "dry_run": true,
+    "would_cancel": [
+      {"registry_id": 17, "tool_name": "submit_lsdyna_job", "slurm_job_ids": ["12345"]}
+    ],
+    "cancelled": [],
+    "failures": [],
+    "summary": {"matched": 1, "cancelled": 0, "failed": 0, "skipped_not_owner": 0}
+  }
+  ```
+tags: [batch, cancel, scancel, jobs, cleanup, mode-own]
+aliases: []
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 120
+expose: catalog
+examples:
+  - title: dry-run cancel everything submitted (preview)
+    args: {status: submitted}
+    note: dry_run defaults to true — this only previews. Re-call with dry_run=false to actually cancel.
+  - title: real cancel by registry_ids
+    args: {registry_ids: [17, 18, 19], dry_run: false}
+    note: dry_run=false ACTUALLY scancels. Confirm with user first.

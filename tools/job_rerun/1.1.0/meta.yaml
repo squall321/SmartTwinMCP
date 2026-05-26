@@ -1,0 +1,19 @@
+name: job_rerun
+version: 1.1.0
+summary: 실패/미완료 DOE만 재실행 (KooChainRun rerun).
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  레지스트리에서 잡 찾아서 KooChainRun rerun 호출. 정상 종료한 DOE는 건너뛰고
+  fail/incomplete한 것만 다시 큐에 넣음.
+
+  단순 .k 잡(submit_lsdyna_job)은 지원 X — sbatch resubmit 필요시 수동 처리.
+tags: [rerun, restart, retry, jobs, mode-own]
+aliases: [rerun, retry]
+transport: {kind: local, shell: /bin/bash, timeout_sec: 120}
+expose: direct
+examples:
+  - title: registry_id
+    args: {registry_id: 42}
+  - title: work_dir fallback (registry_id 모를 때)
+    args: {work_dir: /data/koopark/fullangle_test}

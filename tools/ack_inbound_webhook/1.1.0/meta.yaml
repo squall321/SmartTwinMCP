@@ -1,0 +1,65 @@
+name: ack_inbound_webhook
+version: 1.1.0
+summary: Mark an inbound webhook row consumed (acked) or failed (error). Idempotent.
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  Updates a single row in `/data/SmartTwinMCP/inbound_webhooks.db` (the sidecar
+  queue, see AGENT_GUIDE.md §17.1). Sets `ack_status` to either `acked` or `error`,
+  records `ack_at = now`, and optionally stores a free-form `ack_note`.
+
+  Call this **after** the LLM has acted on a webhook surfaced by
+  `list_inbound_webhooks` — otherwise the same row will keep showing up in the
+  default (ack_status="pending") query.
+
+  # When to call this
+  - After successfully processing a webhook event → `outcome: acked`
+  - After failing to process a webhook event (don't want to retry, want to flag it)
+    → `outcome: error` with a `note` explaining why
+  - **Never** call this just to silence the queue without actually handling the
+    event — that loses signal.
+
+  # Idempotency
+  Calling twice with the **same** outcome on the same row is a no-op the second
+  time: `ok: true`, `idempotent: true`, no row mutation. Use this freely in retry
+  loops.
+
+  Calling with a **different** outcome on a row that's already in a terminal state
+  still succeeds and overwrites — the response's `previous_ack_status` lets the
+  caller see what changed.
+
+  # Pre-conditions
+  - The sidecar service must be deployed and the row must exist.
+  - If the row is missing, the tool hard-fails with `ok: false`. There is no
+    "create on ack" path.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "ack_inbound_webhook",
+    "webhook_id": 17,
+    "previous_ack_status": "pending",
+    "ack_status": "acked",
+    "idempotent": false
+  }
+  ```
+
+  # Test override
+  The DB path is `/data/SmartTwinMCP/inbound_webhooks.db`. The env var
+  `STMC_WEBHOOK_DB`, if set, overrides this path — this is a TEST OVERRIDE used by
+  the §7 verification script. **Production callers should NOT set `STMC_WEBHOOK_DB`.**
+tags: [webhook, inbound, sidecar, sqlite, ack, mode-own]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: mark row 17 successfully processed
+    args: { webhook_id: 17, outcome: acked }
+  - title: flag row 42 as unprocessable with a reason
+    args:
+      webhook_id: 42
+      outcome: error
+      note: "payload missing required field 'commit_sha'; skipped to avoid retry storm"

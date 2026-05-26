@@ -1,0 +1,87 @@
+name: submit_lsdyna_remote
+version: 1.1.0
+summary: Raw LS-DYNA .k → sbatch on a remote cluster head via SSH (no local Slurm CLI needed).
+description: |
+  v1.1.0: writes audit log per §25.3 (inline SQL — SSH transport, see §25.3.2).
+
+  Same submission flow as `submit_lsdyna_job` (raw .k → sbatch, KooChainRun bypass),
+  but the `sbatch` call runs on a remote cluster head node over SSH. Use this when
+  the box running the MCP server does NOT have the Slurm CLI installed.
+
+  **Isolation mode: own.** The registry row is inserted on the remote side under
+  the remote `$USER` (i.e. whoever `STMC_CLUSTER_USER` resolves to). See §18.2.
+
+  # Required env vars (read by the runner before connecting; §22.3 / §22.4)
+  - `STMC_CLUSTER_HEAD` — hostname/IP of the cluster head node. **No default.**
+  - `STMC_CLUSTER_USER` — login user. Default `svc-stmc`.
+  - `STMC_SSH_KEY`     — path to the private key (0600). Default `~/.ssh/id_ed25519`.
+
+  If `STMC_CLUSTER_HEAD` is unset, the runner returns `ok: false` with
+  `stderr: "missing env vars: STMC_CLUSTER_HEAD"` and never opens a socket.
+
+  # When to call this
+  - Dev box or laptop drives the MCP server, but `sbatch` only lives on a head node
+  - Same args shape as `submit_lsdyna_job` — copy a working call and just switch tool
+
+  # Distinguish from similar tools
+  - submit_lsdyna_remote vs submit_lsdyna_job: identical inputs, identical sbatch
+    template. The only difference is WHERE `sbatch` runs (remote head vs localhost).
+    Pick `submit_lsdyna_job` when this host has Slurm CLI; otherwise pick this one.
+  - submit_lsdyna_remote vs single_drop_simulation / fullangle_drop_simulation:
+    those go through KooChainRun (auto rotation, initial velocity). This is raw .k only.
+
+  # Pre-conditions on the remote
+  - `/data/SmartTwinMCP/` is mounted (the script probes this and fails clearly if not).
+  - `/data/SmartTwinMCP/jobs.db` (or `$STMC_JOBS_DB`) is writable by the remote user.
+  - `sbatch` is on `PATH` (the `transport.env.PATH` includes the common Slurm location).
+  - The `.k` file path passed in MUST be reachable on the remote at the same absolute
+    path (same shared filesystem mount). The script probes existence and fails if not.
+
+  # Idempotency (§22.6)
+  Before submitting, the script looks for a recent registry row (same `k_file`, last
+  60s, non-empty `slurm_job_ids`). If found, returns the existing IDs with
+  `note: "duplicate submission suppressed"`. Survives network blips that drop the
+  ssh connection mid-`sbatch`.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "registry_id": 42,
+    "tool": "submit_lsdyna_remote",
+    "work_dir": "/data/.../",
+    "output_dir": "/data/.../",
+    "k_file": "/data/.../my.k",
+    "sbatch_path": "/data/.../my_job.sbatch",
+    "slurm_job_ids": ["123"],
+    "status": "submitted" | "dry_run",
+    "remote_host": "head01",
+    "note": "duplicate submission suppressed"   // only if §22.6 hit
+  }
+  ```
+tags: [lsdyna, simulation, slurm, sbatch, raw, kfile, ssh, remote, mode-own]
+transport:
+  kind: ssh
+  host: ${STMC_CLUSTER_HEAD}
+  user: ${STMC_CLUSTER_USER:-svc-stmc}
+  key_path: ${STMC_SSH_KEY:-~/.ssh/id_ed25519}
+  port: 22
+  env:
+    PATH: /usr/local/slurm/bin:/usr/local/bin:/usr/bin:/bin
+    STMC_JOBS_DB: /data/SmartTwinMCP/jobs.db
+  timeout_sec: 300
+expose: catalog
+examples:
+  - title: minimal dry_run (no real submission)
+    args:
+      k_file: /data/koopark/myjob/input.k
+      lstc_license_ip: 192.168.122.1
+  - title: real submission, larger allocation
+    args:
+      k_file: /data/koopark/crash/full_crash.k
+      lstc_license_ip: 192.168.122.1
+      ncpu: 8
+      memory: 16G
+      time_limit: "24:00:00"
+      dry_run: false
+    note: dry_run=false actually submits to Slurm on the remote head. Confirm with user.
