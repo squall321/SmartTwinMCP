@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_audit_events args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 50,
+      "description": "Maximum number of events to return, newest first."
+    },
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch seconds. Returns events with occurred_at >= since."
+    },
+    "actor": {
+      "type": "string",
+      "description": "Filter by OS user. Default: caller ($USER). Override to inspect another user's history (read-only)."
+    },
+    "tool": {
+      "type": "string",
+      "description": "Filter by fully qualified tool name (e.g. 'submit_lsdyna_job@1.0.0')."
+    },
+    "action": {
+      "type": "string",
+      "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate"],
+      "description": "Filter by §25.2 action vocabulary."
+    },
+    "target_id": {
+      "type": "string",
+      "description": "Filter by domain-specific id (e.g. registry job id as string)."
+    }
+  }
+}

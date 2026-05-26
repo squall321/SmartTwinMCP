@@ -1,0 +1,60 @@
+name: get_template
+version: 1.0.0
+summary: Fetch one preset (template) by name and return its full YAML body.
+description: |
+  **Isolation mode: read-all.** Loads a single YAML template from the templates
+  directory (default `/data/SmartTwinMCP/templates/`) and returns its full
+  parsed structure — `args`, `applies_to`, `notes`, etc. — per AGENT_GUIDE.md §26.
+
+  This tool **only reads**. To produce the merged arg dict for a submit_* call,
+  pass the same `name` to `apply_template_args`.
+
+  # When to call this
+  - You already know the template name (from `list_templates` or chat history)
+    and want to inspect the full body before applying it.
+  - Comparing two templates side-by-side without merging overrides.
+
+  # Distinguish from similar tools
+  - get_template vs list_templates: get = one full body by name;
+    list = paged summary scan.
+  - get_template vs apply_template_args: get = raw YAML structure;
+    apply = merged args ready to hand to a submit_* tool.
+
+  # Pre-conditions
+  - The templates dir is conventionally populated by ops/users (§26.1).
+  - The named template must exist as `<name>.yaml` (or `<name>.yml`) under the
+    templates dir. Missing template → hard fail (`ok: false`).
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "get_template",
+    "template": {
+      "name": "tier1_gpu_pytorch_a100x4",
+      "description": "Standard 4×A100 distributed PyTorch run.",
+      "created_at": "2026-05-25T12:00:00Z",
+      "created_by": "alice",
+      "applies_to": ["submit_distributed_train", "train_pytorch_gpu"],
+      "args": { "gpus": 4, "gpu_type": "a100", "gpu_partition": "gpu-a100" },
+      "notes": "Validated against torchrun 2.3."
+    }
+  }
+  ```
+
+  # Test override
+  The templates dir is `/data/SmartTwinMCP/templates/`. The env var
+  `STMC_TEMPLATES_DIR`, if set, overrides this path — this is a TEST OVERRIDE
+  used by the §7 verification script. **Production callers should NOT set
+  `STMC_TEMPLATES_DIR`.**
+tags: [template, preset, config, yaml, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: fetch tier-1 GPU preset
+    args: { name: tier1_gpu_pytorch_a100x4 }
+  - title: fetch a CPU LS-DYNA preset
+    args: { name: tier1_cpu }

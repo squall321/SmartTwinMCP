@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "summarize_costs args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch (seconds). Lower bound on registry.submitted_at. Default: 30 days before now."
+    },
+    "until": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch (seconds). Upper bound on registry.submitted_at (inclusive). Default: now."
+    }
+  }
+}

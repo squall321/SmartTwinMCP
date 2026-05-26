@@ -1,0 +1,71 @@
+name: list_scheduled_jobs
+version: 1.0.0
+summary: List cron-spec YAML files under STMC_CRON_DIR (summary fields only).
+description: |
+  **Isolation mode: read-all.** Returns summary rows for every cron-spec
+  YAML file under `STMC_CRON_DIR` (default `/data/SmartTwinMCP/cron/`),
+  regardless of `created_by`. Each row carries the owner field so the LLM
+  can see whose spec it is before acting.
+
+  Cron specs are read-only from MCP's perspective — the sidecar runner
+  (separate process: host crond, k8s CronJob, ...) consumes them at
+  schedule time. See AGENT_GUIDE.md §27.1 for the sidecar contract.
+
+  # When to call this
+  - "What scheduled jobs are set up?"
+  - "Show me daily collects" / filter by `tool` to narrow to a specific
+    callee.
+  - Audit step before mutating with `enable_scheduled_job`.
+
+  # Distinguish from similar tools
+  - list_scheduled_jobs vs get_scheduled_job: list = many specs, summary
+    fields only (no `args` body). get = one spec, full YAML body.
+  - list_scheduled_jobs vs list_recent_jobs: scheduled = future cadence
+    specs in YAML. recent jobs = past executions in SQLite registry.
+
+  # Pre-conditions
+  - `STMC_CRON_DIR` exists. If the directory is missing, returns
+    `ok: true, count: 0, scheduled: []` (treat as empty queue; matches
+    §27's "no spec installed yet" case).
+
+  # Filtering
+  All filters AND together. Both filters are optional.
+
+  # Returns
+  Per AGENT_GUIDE.md §27.4 — summary fields only:
+  ```json
+  {
+    "ok": true,
+    "tool": "list_scheduled_jobs",
+    "count": 2,
+    "scheduled": [
+      {
+        "name": "daily_drop_collect",
+        "schedule": "0 2 * * 1-5",
+        "tool": "job_collect@1.0.0",
+        "enabled": true,
+        "last_run_at": 1716525600,
+        "last_run_status": "ok",
+        "created_by": "alice"
+      }
+    ]
+  }
+  ```
+  Sorted by `name` ascending for stable LLM-facing output.
+
+  # Test override
+  `STMC_CRON_DIR` overrides the cron directory. Production callers should
+  leave it unset (defaults to `/data/SmartTwinMCP/cron/`).
+tags: [scheduled, cron, sidecar, yaml, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: list all cron specs
+    args: {}
+  - title: only enabled specs targeting job_collect@1.0.0
+    args:
+      enabled: true
+      tool: job_collect@1.0.0

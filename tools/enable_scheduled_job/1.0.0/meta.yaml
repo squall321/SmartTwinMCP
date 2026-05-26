@@ -1,0 +1,61 @@
+name: enable_scheduled_job
+version: 1.0.0
+summary: Flip the 'enabled' flag on a cron spec. Only the spec's created_by user is allowed.
+description: |
+  **Isolation mode: own.** Sets `enabled` to the explicit boolean passed
+  in `enabled` on the cron-spec YAML at `<STMC_CRON_DIR>/<name>.yaml`.
+  The caller's identity is `$USER` from the process environment — never a
+  JSON arg (per AGENT_GUIDE.md §18.1). Specs whose `created_by` does not
+  equal `$USER` are rejected with a hard fail.
+
+  The actual scheduler is the external sidecar (host crond, k8s CronJob,
+  ...). MCP only mutates the YAML file. The sidecar picks up the change
+  on its next scan — propagation latency is the sidecar's contract, not
+  this tool's.
+
+  # When to call this
+  - User asks "disable the daily collect" → `enabled: false`.
+  - User asks "re-enable hourly_health_probe" → `enabled: true`.
+  - `enabled` is REQUIRED — there is no toggle / no implicit flip. The
+    LLM must state the desired state explicitly so retries are idempotent.
+
+  # Idempotency
+  Calling with `enabled` already matching the spec is a no-op:
+  `ok: true, idempotent: true`, no file write. Use this freely in retry
+  loops.
+
+  # Pre-conditions
+  - The spec file `<STMC_CRON_DIR>/<name>.yaml` exists.
+  - The spec's `created_by` equals `$USER`. **Foreign-owned specs are
+    rejected** with `ok: false` and `reason` naming the owner.
+
+  # Multi-tenant
+  Per §27.5 / §18.2 mode-own: only the spec owner may flip its switch.
+  This tool will NOT honor an `owner` / `user` / `as_user` arg if added.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "enable_scheduled_job",
+    "name": "daily_drop_collect",
+    "previous_enabled": true,
+    "enabled": false,
+    "idempotent": false
+  }
+  ```
+
+  # Test override
+  `STMC_CRON_DIR` overrides the cron directory. Production callers should
+  leave it unset.
+tags: [scheduled, cron, sidecar, yaml, mode-own]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: disable a spec you own
+    args: { name: daily_drop_collect, enabled: false }
+  - title: re-enable a spec you own
+    args: { name: hourly_health_probe, enabled: true }

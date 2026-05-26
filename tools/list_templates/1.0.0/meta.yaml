@@ -1,0 +1,71 @@
+name: list_templates
+version: 1.0.0
+summary: List job-config presets (templates) on disk, with optional filters.
+description: |
+  **Isolation mode: read-all.** Returns summaries of every YAML template found
+  under the templates directory (default `/data/SmartTwinMCP/templates/`).
+  Templates are diffable, git-trackable named arg-presets that any compatible
+  `submit_*` tool can consume — see AGENT_GUIDE.md §26.
+
+  This tool **only reads**. It returns summary metadata (name, description,
+  applies_to, created_at, created_by), NOT the full `args` body. For the full
+  body call `get_template` once you've picked one; to materialize the merged
+  args for a submit_* call use `apply_template_args`.
+
+  # When to call this
+  - User asks "what presets do we have?", "any tier-1 GPU template?"
+  - Pre-flight before `apply_template_args` — to discover candidate names
+  - Filter by which submit_* tool you intend to call (`applies_to`)
+
+  # Distinguish from similar tools
+  - list_templates vs get_template: list = summary scan with filters;
+    get = one full template body.
+  - list_templates vs apply_template_args: list = discover names;
+    apply = merge overrides and return ready-to-submit args.
+
+  # Pre-conditions
+  - Templates dir (default `/data/SmartTwinMCP/templates/`) is conventionally
+    populated by ops/users hand-authoring YAML files per §26.1. If the dir
+    does not exist this tool returns `ok: true, count: 0, templates: [],
+    reason: "templates dir not initialized"` — a missing dir is NOT an error,
+    it just means no templates are deployed yet.
+
+  # Filtering
+  All filters are ANDed. `applies_to` matches if the template's `applies_to`
+  list contains the given tool name. `tag` matches if it's in the template's
+  `tags` list (templates may have a `tags` field; not all do).
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "list_templates",
+    "count": 2,
+    "templates": [
+      {
+        "name": "tier1_gpu_pytorch_a100x4",
+        "description": "Standard 4×A100 distributed PyTorch run.",
+        "applies_to": ["submit_distributed_train", "train_pytorch_gpu"],
+        "created_at": "2026-05-25T12:00:00Z",
+        "created_by": "alice"
+      }
+    ]
+  }
+  ```
+
+  # Test override
+  The templates dir is `/data/SmartTwinMCP/templates/`. The env var
+  `STMC_TEMPLATES_DIR`, if set, overrides this path — this is a TEST OVERRIDE
+  used by the §7 verification script. **Production callers should NOT set
+  `STMC_TEMPLATES_DIR`.**
+tags: [template, preset, config, yaml, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: list all templates
+    args: {}
+  - title: templates that apply to submit_lsdyna_job
+    args: { applies_to: submit_lsdyna_job }

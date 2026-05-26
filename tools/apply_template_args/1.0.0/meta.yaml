@@ -1,0 +1,68 @@
+name: apply_template_args
+version: 1.0.0
+summary: Merge optional overrides on top of a named template's args and return the result.
+description: |
+  **Isolation mode: read-all.** Loads a YAML template by name from the templates
+  directory (default `/data/SmartTwinMCP/templates/`), deep-merges `overrides`
+  on top of the template's `args` map, and returns the merged dict — ready for
+  the LLM to pass to a compatible `submit_*` tool. See AGENT_GUIDE.md §26.
+
+  This tool **does NOT invoke any other tool.** Composition is the LLM's job
+  per §26.3: this call resolves the args, the next call (the actual submit_*)
+  uses them. Two steps keeps the resolved args visible in the audit log (§25).
+
+  Deep-merge semantics (mirroring `scenario_builder.deep_merge`):
+  - Dict values: recursively merged (override keys win, others kept).
+  - List / scalar values: REPLACED by the override.
+
+  # When to call this
+  - User says "use the tier-1 GPU preset but with 12-hour time limit".
+  - Right after `list_templates` / `get_template` once a preset is chosen.
+
+  # Distinguish from similar tools
+  - apply_template_args vs get_template: apply = merged args ready for submit;
+    get = raw YAML body for inspection.
+  - apply_template_args vs the submit_* tools: this tool **does NOT submit**.
+    Feed its `args` to the appropriate submit_* tool yourself.
+
+  # Pre-conditions
+  - The named template must exist under the templates dir.
+  - `overrides` is optional; pass `{}` (or omit) to materialize the template
+    unchanged.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "apply_template_args",
+    "template_name": "tier1_gpu_pytorch_a100x4",
+    "compatible_tools": ["submit_distributed_train", "train_pytorch_gpu"],
+    "args": {
+      "gpus": 4, "gpu_type": "a100", "gpu_partition": "gpu-a100",
+      "nodes": 1, "ntasks_per_node": 4, "time_limit": "12:00:00",
+      "mem_per_cpu": "4G"
+    },
+    "applied_overrides": { "time_limit": "12:00:00" },
+    "hint": "Pass `args` directly to one of compatible_tools."
+  }
+  ```
+
+  # Test override
+  The templates dir is `/data/SmartTwinMCP/templates/`. The env var
+  `STMC_TEMPLATES_DIR`, if set, overrides this path — this is a TEST OVERRIDE
+  used by the §7 verification script. **Production callers should NOT set
+  `STMC_TEMPLATES_DIR`.**
+tags: [template, preset, config, merge, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: apply preset with no overrides
+    args: { name: tier1_cpu }
+  - title: apply preset with an ncpu override
+    args:
+      name: tier1_cpu
+      overrides: { ncpu: 16 }
+    note: "Returns the template's args with ncpu replaced by 16."

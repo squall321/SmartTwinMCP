@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "get_scheduled_job args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_]+$",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Cron-spec name. Resolves to <STMC_CRON_DIR>/<name>.yaml. Must match [a-zA-Z0-9_]+."
+    }
+  }
+}

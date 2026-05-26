@@ -1,0 +1,59 @@
+name: get_scheduled_job
+version: 1.0.0
+summary: Fetch a single cron-spec YAML body by name (full args, including _runtime keys).
+description: |
+  **Isolation mode: read-all.** Reads one cron-spec YAML file from
+  `STMC_CRON_DIR` (default `/data/SmartTwinMCP/cron/`) and returns its
+  full parsed body. The `created_by` field is included so the LLM can
+  decide whether `enable_scheduled_job` would be permitted (§27.5).
+
+  `args._runtime` keys (e.g. `{ _runtime: "now - 24h" }`) are passed
+  through unchanged. MCP does NOT resolve them — that's the sidecar
+  runner's job at execution time (see AGENT_GUIDE.md §27.3).
+
+  # When to call this
+  - "Show me the daily_drop_collect spec" / "what args does it use?"
+  - Before `enable_scheduled_job` to confirm ownership.
+  - Debugging why a sidecar run produced unexpected behavior.
+
+  # Distinguish from similar tools
+  - get_scheduled_job vs list_scheduled_jobs: get = one spec, full body.
+    list = many specs, summary fields only.
+
+  # Pre-conditions
+  - The spec file `<STMC_CRON_DIR>/<name>.yaml` exists. **Hard-fails** if
+    missing — there is no "create on get" path.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "get_scheduled_job",
+    "scheduled": {
+      "name": "daily_drop_collect",
+      "schedule": "0 2 * * 1-5",
+      "tool": "job_collect@1.0.0",
+      "args": { "since": { "_runtime": "now - 24h" } },
+      "enabled": true,
+      "created_at": "2026-05-25T12:00:00Z",
+      "created_by": "alice",
+      "last_run_at": null,
+      "last_run_status": null
+    }
+  }
+  ```
+
+  # Test override
+  `STMC_CRON_DIR` overrides the cron directory. Production callers should
+  leave it unset.
+tags: [scheduled, cron, sidecar, yaml, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: fetch one spec by name
+    args: { name: daily_drop_collect }
+  - title: another lookup
+    args: { name: hourly_health_probe }

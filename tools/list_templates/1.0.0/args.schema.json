@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_templates args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "applies_to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Filter to templates whose `applies_to` list contains this tool name (exact match). e.g. 'submit_lsdyna_job'."
+    },
+    "tag": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Filter to templates whose `tags` list contains this tag (exact match). Templates may or may not declare tags; templates without a `tags` field are excluded when this filter is set."
+    }
+  }
+}

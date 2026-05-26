@@ -1,0 +1,65 @@
+name: estimate_cost
+version: 1.0.0
+summary: 파티션·CPU·GPU·노드·time_limit 으로 잡 실행 비용을 예상해서 KRW (또는 unit) 로 반환.
+description: |
+  Slurm 잡을 제출하기 전에 "이 요청이 얼마 들겠나" 를 계산하는 pre-flight 계산기입니다.
+  요율표는 `/data/SmartTwinMCP/cost_rates.yaml` (또는 `STMC_COST_RATES_FILE` 오버라이드)
+  에서 읽고, 부수효과는 없습니다. registry/audit 어떤 것도 쓰지 않습니다 (§25.3 참고:
+  observability 도구는 audit 안 씀).
+
+  **Isolation mode: read-all (§18.2).** 누구든지 호출 가능하고 사용자 식별 없이 동작.
+
+  # 언제 호출하는가
+  - `submit_distributed_train`, `submit_lsdyna_job`, `train_pytorch_gpu` 등 비싼 잡을
+    제출하기 직전에 견적을 받을 때.
+  - 사용자가 "X 시간 동안 4×A100 돌리면 얼마야?" 라고 물을 때.
+
+  # 호출하지 말아야 할 때
+  - 이미 끝난 잡들의 실현 비용을 합산하려면 `summarize_costs` (§28.2).
+  - 그냥 파티션 capacity 만 보려면 `check_partition_capacity` 또는
+    `list_slurm_partitions`.
+
+  # 동작
+  1. `STMC_COST_RATES_FILE` (기본 `/data/SmartTwinMCP/cost_rates.yaml`) 를 로드.
+     없으면 `ok: false, reason: "cost_rates.yaml not deployed — ask ops to install it"`.
+  2. `args.partition` 이 `rates:` 맵에 없으면 ok:false.
+  3. `time_limit` 을 시간(소수) 으로 파싱. 공식 (§28.3):
+     `per_node = hours × (cpus × cpu_hour + gpus × gpu_hour)`,
+     `total = per_node × nodes`.
+  4. §28.4 의 정확한 응답 구조로 반환. `caveat` 는 항상 포함.
+
+  # Pre-conditions
+  - `cost_rates.yaml` 이 배포되어 있어야 합니다 (§28.1).
+  - 요청한 `partition` 키가 `rates:` 맵에 존재해야 합니다.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "estimate_cost",
+    "request": {"partition": "gpu_a100", "cpus": 32, "gpus": 4, "nodes": 1, "time_limit": "08:00:00"},
+    "unit": "KRW",
+    "hours": 8.0,
+    "breakdown": {
+      "cpu_hours_cost": 51200,
+      "gpu_hours_cost": 160000,
+      "node_multiplier": 1
+    },
+    "estimated_total": 211200,
+    "rate_source_updated": "2026-05-25",
+    "caveat": "Wall-time estimate. Actual cost depends on job duration."
+  }
+  ```
+tags: [cost, accounting, preflight, observability, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 15
+expose: catalog
+examples:
+  - title: 4×A100 × 8시간 (32 CPU per node, 1 node)
+    args: {partition: "gpu_a100", cpus: 32, gpus: 4, nodes: 1, time_limit: "08:00:00"}
+  - title: CPU 전용 잡 (16 cpus × 2시간)
+    args: {partition: "cpu_partition", cpus: 16, time_limit: "02:00:00"}
+  - title: 다중 노드 (2 node × 32 cpu × 4 gpu × 12h)
+    args: {partition: "gpu_h100", cpus: 32, gpus: 4, nodes: 2, time_limit: "12:00:00"}

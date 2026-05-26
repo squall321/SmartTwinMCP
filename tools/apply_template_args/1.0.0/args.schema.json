@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "apply_template_args args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_]+$",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Template name (no extension, no slashes). Matches the stem of `<name>.yaml` under the templates dir."
+    },
+    "overrides": {
+      "type": "object",
+      "default": {},
+      "description": "Optional arg overrides deep-merged on top of the template's `args`. Dict values merge recursively; list and scalar values replace.",
+      "additionalProperties": true
+    }
+  }
+}

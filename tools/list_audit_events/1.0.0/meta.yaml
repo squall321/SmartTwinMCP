@@ -1,0 +1,84 @@
+name: list_audit_events
+version: 1.0.0
+summary: Query the cross-tool §25 audit log (LLM decision history). Defaults to caller's own events.
+description: |
+  **Isolation mode: own.** Returns audit rows where `actor == $USER` by
+  default. The `actor` filter is overrideable (this is an observability
+  read), but the *default* is the caller's identity — there is no
+  ambient cross-user view. Filter args are query knobs, never write
+  paths (§18.6: identity comes from `$USER`, not from a JSON arg).
+
+  This is the cross-tool §25 decision log: a session-spanning record of
+  what the LLM *decided to do* (submitted, cancelled, ack'd, applied a
+  template, ...). Unlike `registry.notes` (per-row, freeform) or `extra`
+  (per-tool), audit rows persist across job purges and across tools —
+  so when the user revisits a session three days later asking "wait,
+  which GPUs did you use for that sweep?" the answer is reconstructible.
+
+  # When to call this
+  - "What did I submit yesterday?" / "show me my recent decisions"
+  - Reconstructing context after the chat session restarts
+  - Auditing whether a particular cancel happened, and when
+
+  # When NOT to call
+  - Looking for a job row → use `my_jobs` / `list_recent_jobs`
+  - Looking for live status of one job → use `job_status` / `get_job_details`
+
+  # Filters (all optional, ANDed)
+  - `limit` — newest-first cap (1..500, default 50)
+  - `since` — unix epoch; only events with `occurred_at >= since`
+  - `actor` — OS user filter. Defaults to `$USER`. Override to inspect
+    another user's history (read-only — no write impact).
+  - `tool` — qualified tool name, e.g. `"submit_lsdyna_job@1.0.0"`
+  - `action` — one of: submit, cancel, inspect, acknowledge,
+    template_apply, cost_estimate (§25.2 vocabulary)
+  - `target_id` — domain-specific id, e.g. a registry job id as string
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "list_audit_events",
+    "count": 3,
+    "events": [
+      {
+        "id": 42,
+        "occurred_at": 1716600000,
+        "actor": "alice",
+        "tool": "submit_lsdyna_job@1.0.0",
+        "action": "submit",
+        "target_kind": "job",
+        "target_id": "stmc-7c3f81",
+        "summary": "submitted /data/cases/A.k on partition cpu (8 cpu, 32G, 02:00:00)",
+        "detail": { "k_file": "/data/cases/A.k", "ncpu": 8, "slurm_job_ids": ["12345"] }
+      }
+    ]
+  }
+  ```
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` set in the environment (always true under
+    sshd / login shells).
+  - The audit DB at `/data/SmartTwinMCP/audit.db` may not exist yet on
+    a fresh box. In that case the tool returns `ok: true, count: 0,
+    events: [], reason: "audit DB not initialized — no events recorded
+    yet"` instead of failing (same forgiving behavior the registry has
+    on first read — the DB+table auto-create on first write).
+tags: [audit, history, query, multi-tenant, mode-own]
+aliases: [audit_log, audit_history]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: my last 50 audit events (default)
+    args: {}
+  - title: my recent submit decisions only
+    args: {action: submit, limit: 20}
+  - title: events from a specific tool
+    args: {tool: "submit_lsdyna_job@1.0.0"}
+  - title: events about one job id, any actor
+    args: {target_id: "stmc-7c3f81", actor: "alice"}
+  - title: my events since an epoch
+    args: {since: 1716000000, limit: 100}

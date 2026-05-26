@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "enable_scheduled_job args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "enabled"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_]+$",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Cron-spec name. Resolves to <STMC_CRON_DIR>/<name>.yaml."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Desired state of the spec's 'enabled' field. Required — no implicit toggle. Idempotent: if the spec already has this value, no file write occurs."
+    }
+  }
+}

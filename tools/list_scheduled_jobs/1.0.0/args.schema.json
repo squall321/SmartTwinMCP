@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "list_scheduled_jobs args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "If set, filter to specs with this enabled value. Omit to return both enabled and disabled."
+    },
+    "tool": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?$",
+      "description": "Qualified tool name to filter by, e.g. 'job_collect@1.0.0'. Exact match against the spec's 'tool' field."
+    }
+  }
+}
