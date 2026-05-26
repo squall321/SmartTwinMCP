@@ -98,21 +98,55 @@ def _run_local(entry: ToolEntry, args: dict, t: LocalTransport) -> RunResult:
 def _run_ssh(entry: ToolEntry, args: dict, t: SshTransport) -> RunResult:
     """Pipe script.sh over ssh stdin; pass args via env exported on the remote.
 
+    Supports ${VAR} and ${VAR:-default} interpolation in host, user, key_path,
+    remote_cwd, and env values, sourced from the process environment. Missing
+    required env vars cause a clean failure before any network attempt
+    (matches _run_http semantics — see §15.3 / §22.3 of AGENT_GUIDE.md).
+
     We don't upload the script to a persistent path — each invocation is hermetic.
     """
+    proc_env = os.environ
+
+    rendered_host, miss_host = _interpolate_env(t.host, proc_env)
+    rendered_user, miss_user = _interpolate_env(t.user, proc_env) if t.user else ("", [])
+    rendered_key, miss_key = _interpolate_env(t.key_path, proc_env) if t.key_path else ("", [])
+    rendered_cwd, miss_cwd = _interpolate_env(t.remote_cwd, proc_env) if t.remote_cwd else ("", [])
+    rendered_env: dict[str, str] = {}
+    miss_envv: list[str] = []
+    for k, v in t.env.items():
+        rv, m = _interpolate_env(v, proc_env)
+        rendered_env[k] = rv
+        miss_envv.extend(m)
+
+    missing = sorted(set(miss_host + miss_user + miss_key + miss_cwd + miss_envv))
+    sanitized_target = f"{rendered_user}@{rendered_host}" if rendered_user else rendered_host
+    sanitized_cmd = f"ssh -p {t.port} {sanitized_target}"
+
+    if missing:
+        return RunResult(
+            ok=False, exit_code=None, stdout="",
+            stderr=f"missing env vars: {', '.join(missing)}",
+            parsed=None, transport="ssh", command=sanitized_cmd,
+        )
+
     args_json = json.dumps(args, ensure_ascii=False)
-    target = f"{t.user}@{t.host}" if t.user else t.host
+    target = sanitized_target
     env_exports = " ".join(
-        f"{k}={shlex.quote(v)}" for k, v in t.env.items()
+        f"{k}={shlex.quote(v)}" for k, v in rendered_env.items()
     )
     args_export = f"STMC_ARGS_JSON={shlex.quote(args_json)}"
-    cd = f"cd {shlex.quote(t.remote_cwd)} && " if t.remote_cwd else ""
+    cd = f"cd {shlex.quote(rendered_cwd)} && " if rendered_cwd else ""
     # The remote shell reads the script body from stdin (bash -s).
     remote_cmd = f"{cd}{args_export} {env_exports} bash -s"
     ssh_cmd = ["ssh", "-p", str(t.port)]
-    if t.key_path:
-        ssh_cmd += ["-i", t.key_path]
-    ssh_cmd += ["-o", "BatchMode=yes", target, remote_cmd]
+    if rendered_key:
+        ssh_cmd += ["-i", rendered_key]
+    ssh_cmd += [
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",       # fail fast on unreachable hosts
+        "-o", "StrictHostKeyChecking=accept-new",
+        target, remote_cmd,
+    ]
 
     try:
         with entry.script_path.open("rb") as f:
