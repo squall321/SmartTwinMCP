@@ -78,16 +78,28 @@ _ENV_TOKEN_RE = re.compile(r"\$\{[A-Z_][A-Z0-9_]*(?::-[^}]*)?\}")
 _PRIVATE_IP_RE = re.compile(r"^(192\.168|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.)")
 
 
+_MUTATION_NAME_PREFIXES = (
+    "submit_", "cancel_", "batch_cancel", "ack_", "job_stop", "job_rerun",
+    "delete_", "update_", "create_", "enable_", "disable_",
+)
+
+
 def _is_mutation_tool(entry: ToolEntry) -> bool:
-    """Heuristic: a tool likely mutates if its name suggests a write operation
-    or it accepts a `dry_run` arg (which the guide reserves for mutators)."""
-    name = entry.name
+    """Heuristic: does this tool have side effects worth auditing (§25.3)?
+
+    `mode-own` alone is NOT enough — own-scoped READS (list_audit_events,
+    summarize_costs) also use mode-own and should not be flagged. The signal
+    we want is "side-effect", approximated by either:
+      - the tool name matches a known mutation prefix, OR
+      - the schema has a `dry_run` arg (the guide reserves this for mutators).
+
+    `mode-read-all` is authoritative — observability never mutates.
+    """
+    if "mode-read-all" in entry.meta.tags:
+        return False
     if "dry_run" in (entry.args_schema.get("properties") or {}):
         return True
-    return any(name.startswith(p) for p in (
-        "submit_", "cancel_", "batch_cancel", "ack_", "job_stop", "job_rerun",
-        "delete_", "update_", "create_",
-    ))
+    return any(entry.name.startswith(p) for p in _MUTATION_NAME_PREFIXES)
 
 
 def _has_mode_tag(entry: ToolEntry) -> bool:
@@ -308,6 +320,34 @@ def rule_L060_no_hardcoded_endpoint(_catalog, entries) -> Iterable[Finding]:
                 )
 
 
+_AUDIT_CALL_RE = re.compile(r"\b(audit\.)?record_event\s*\(")
+
+
+def rule_L070_audit_wire(_catalog, entries) -> Iterable[Finding]:
+    """L070 — mutation tools must call audit.record_event (§25.3).
+
+    Heuristic: any tool flagged as a mutation by _is_mutation_tool() should
+    have at least one occurrence of `record_event(...)` somewhere in its
+    script.sh. False positives are possible when a tool legitimately uses
+    a different audit pathway — wire those by tagging `mode-read-all` or
+    by suppressing L070 explicitly via --disable.
+    """
+    for entry in entries:
+        if not _is_mutation_tool(entry):
+            continue
+        try:
+            body = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not _AUDIT_CALL_RE.search(body):
+            yield Finding(
+                "warning", "L070", entry.qualified_name,
+                "mutation tool does not call audit.record_event (§25.3) — "
+                "every successful submit/cancel/ack must write one audit row",
+                entry.script_path,
+            )
+
+
 # Registry — keep ordered so output is deterministic.
 ALL_RULES: list[tuple[str, Callable]] = [
     ("L001", rule_L001_catalog_issues),
@@ -322,6 +362,7 @@ ALL_RULES: list[tuple[str, Callable]] = [
     ("L040", rule_L040_expose_value),
     ("L050", rule_L050_mode_tag),
     ("L060", rule_L060_no_hardcoded_endpoint),
+    ("L070", rule_L070_audit_wire),
 ]
 
 

@@ -196,6 +196,75 @@ def test_L060_hardcoded_authorization_header():
         assert len(errs) == 1, [f.format() for f in report.findings]
 
 
+def test_L070_mutation_tool_missing_audit_call():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # A mutation-shaped tool that DOES NOT call audit.record_event.
+        d = root / "submit_foo" / "1.0.0"
+        d.mkdir(parents=True)
+        (d / "args.schema.json").write_text(json.dumps({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"dry_run": {"type": "boolean", "default": True, "description": "dry"}},
+        }))
+        (d / "meta.yaml").write_text("\n".join([
+            "name: submit_foo",
+            "version: 1.0.0",
+            "summary: smoke mutation",
+            "tags: [mode-own]",
+            "transport: {kind: local, shell: /bin/bash, timeout_sec: 5}",
+            "expose: catalog",
+            "examples:",
+            "  - title: a",
+            "    args: {dry_run: true}",
+            "  - title: b",
+            "    args: {dry_run: false}",
+        ]) + "\n")
+        sh = d / "script.sh"
+        # Note: does NOT call record_event anywhere.
+        sh.write_text('#!/bin/bash\necho \'{"ok": true}\'\n')
+        sh.chmod(0o755)
+        (root / "submit_foo" / "latest").symlink_to("1.0.0")
+
+        report = lint(root)
+        warns = [f for f in report.findings if f.rule_id == "L070"]
+        assert len(warns) == 1, [f.format() for f in report.findings]
+
+
+def test_L070_read_all_tool_not_flagged():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # Read-all (observability) tool — mutation-shaped name but tagged read-all.
+        d = root / "submit_summary" / "1.0.0"
+        d.mkdir(parents=True)
+        (d / "args.schema.json").write_text(json.dumps({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        }))
+        (d / "meta.yaml").write_text("\n".join([
+            "name: submit_summary",
+            "version: 1.0.0",
+            "summary: a misleadingly-named observability tool",
+            "tags: [mode-read-all]",
+            "transport: {kind: local, shell: /bin/bash, timeout_sec: 5}",
+            "expose: catalog",
+            "examples:",
+            "  - title: a",
+            "    args: {}",
+        ]) + "\n")
+        sh = d / "script.sh"
+        sh.write_text('#!/bin/bash\necho \'{"ok": true}\'\n')
+        sh.chmod(0o755)
+        (root / "submit_summary" / "latest").symlink_to("1.0.0")
+
+        report = lint(root)
+        l070 = [f for f in report.findings if f.rule_id == "L070"]
+        assert l070 == [], "mode-read-all must not trigger L070"
+
+
 def test_rule_registry_is_complete():
     """Catch the case where someone adds a rule_Lxxx function but forgets to
     register it in ALL_RULES."""
