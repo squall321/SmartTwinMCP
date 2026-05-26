@@ -1,0 +1,64 @@
+name: get_inbound_webhook
+version: 1.0.0
+summary: Fetch one inbound webhook row by webhook_id from the sidecar queue (SQLite).
+description: |
+  Reads a single row from `/data/SmartTwinMCP/inbound_webhooks.db` — the SQLite queue
+  populated by an external webhook-receiver sidecar (not in this repo,
+  see AGENT_GUIDE.md §17.1). Returns the row identified by `webhook_id` with
+  `payload` and `headers` already JSON-parsed.
+
+  This tool **only reads**. It does not ack the row. Pair with `ack_inbound_webhook`
+  after the LLM has acted on the event.
+
+  # When to call this
+  - You already have a `webhook_id` (e.g. from `list_inbound_webhooks` or
+    `peek_inbound_webhook`) and want to inspect the full payload/headers.
+  - Diagnosing one specific delivery without scanning the queue.
+
+  # Distinguish from similar tools
+  - get_inbound_webhook vs list_inbound_webhooks: get = single row by id;
+    list = paged scan with filters.
+  - get_inbound_webhook vs peek_inbound_webhook: get needs an explicit id;
+    peek auto-selects the oldest pending row.
+  - get_inbound_webhook vs ack_inbound_webhook: get is read-only; ack mutates.
+
+  # Pre-conditions
+  - The sidecar service must be deployed and writing to
+    `/data/SmartTwinMCP/inbound_webhooks.db`. Missing file → `ok: false`.
+  - The `webhook_id` must exist. Missing row → hard fail (`ok: false`).
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "get_inbound_webhook",
+    "webhook": {
+      "webhook_id": 17,
+      "received_at": 1716500000,
+      "source": "github",
+      "event_type": "push",
+      "headers": { "X-GitHub-Event": "push", "...": "..." },
+      "payload": { "ref": "refs/heads/main", "...": "..." },
+      "signature_verified": 1,
+      "ack_status": "pending",
+      "ack_at": null,
+      "ack_note": null
+    }
+  }
+  ```
+
+  # Test override
+  The DB path is `/data/SmartTwinMCP/inbound_webhooks.db`. The env var
+  `STMC_WEBHOOK_DB`, if set, overrides this path — this is a TEST OVERRIDE used by
+  the §7 verification script. **Production callers should NOT set `STMC_WEBHOOK_DB`.**
+tags: [webhook, inbound, sidecar, sqlite, queue]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: fetch row 17
+    args: { webhook_id: 17 }
+  - title: fetch row 1 (smallest valid id)
+    args: { webhook_id: 1 }

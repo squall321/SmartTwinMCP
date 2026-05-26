@@ -1,0 +1,77 @@
+name: peek_inbound_webhook
+version: 1.0.0
+summary: Peek at the oldest pending inbound webhook row WITHOUT acking it.
+description: |
+  Reads `/data/SmartTwinMCP/inbound_webhooks.db` and returns the SINGLE oldest
+  pending row (smallest `id` with `ack_status = 'pending'`), optionally filtered
+  by `source` and/or `event_type`. The row is **NOT** acked — callers must
+  explicitly call `ack_inbound_webhook` after acting (§17.6 anti-pattern: "Auto-ack
+  on list/peek").
+
+  If no pending row matches, returns `ok: true, webhook: null, reason: "no pending
+  webhooks"`. This is **not a failure** — it just means the queue is empty (for
+  the requested filter). The LLM should treat null as "nothing to do".
+
+  # When to call this
+  - Polling step: "is there anything new for me to handle?"
+  - LLM workflows that consume webhooks one-at-a-time in FIFO order.
+
+  # Distinguish from similar tools
+  - peek_inbound_webhook vs list_inbound_webhooks: peek = oldest one, FIFO
+    intent; list = page through with arbitrary filters, newest-first.
+  - peek_inbound_webhook vs get_inbound_webhook: peek auto-picks the oldest
+    pending row; get needs you to know the webhook_id.
+  - peek_inbound_webhook does NOT ack — you must follow up with
+    `ack_inbound_webhook` once you've acted on the event.
+
+  # Pre-conditions
+  - The sidecar service must be deployed and writing to
+    `/data/SmartTwinMCP/inbound_webhooks.db`. Missing file → `ok: false`.
+
+  # Returns
+  Row found:
+  ```json
+  {
+    "ok": true,
+    "tool": "peek_inbound_webhook",
+    "webhook": {
+      "webhook_id": 5,
+      "received_at": 1716500000,
+      "source": "github",
+      "event_type": "push",
+      "headers": { "...": "..." },
+      "payload": { "...": "..." },
+      "signature_verified": 1,
+      "ack_status": "pending",
+      "ack_at": null,
+      "ack_note": null
+    }
+  }
+  ```
+  Empty queue (filter matches nothing):
+  ```json
+  {
+    "ok": true,
+    "tool": "peek_inbound_webhook",
+    "webhook": null,
+    "reason": "no pending webhooks"
+  }
+  ```
+
+  # Test override
+  The DB path is `/data/SmartTwinMCP/inbound_webhooks.db`. The env var
+  `STMC_WEBHOOK_DB`, if set, overrides this path — this is a TEST OVERRIDE used by
+  the §7 verification script. **Production callers should NOT set `STMC_WEBHOOK_DB`.**
+tags: [webhook, inbound, sidecar, sqlite, queue, peek]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: peek next pending row (any source)
+    args: {}
+  - title: peek next pending GitHub push event
+    args:
+      source: github
+      event_type: push

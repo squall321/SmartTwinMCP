@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "peek_inbound_webhook args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Filter by source label written by the sidecar (e.g. 'github', 'slurm-callback'). Exact match."
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Filter by event_type (source-specific, e.g. 'push', 'job.completed'). Exact match."
+    }
+  }
+}

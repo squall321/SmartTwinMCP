@@ -1,0 +1,59 @@
+name: check_partition_capacity
+version: 1.0.0
+summary: 특정 파티션이 요청한 GPU/CPU/노드 수를 지금 수용할 수 있는지 verdict 반환.
+description: |
+  `sinfo` 와 `squeue` 를 조합해서 "지금 이 파티션이 N 노드 × G GPU × C CPU 요청을
+  받아줄 수 있는가?" 라는 pre-flight 판정을 내립니다. LLM 이 `submit_*` 호출 전에
+  쓰는 게이트 도구입니다.
+
+  mode: read-all (§18.2). Observability/판정 전용 — mutate 하지 않습니다.
+
+  # 언제 호출하는가
+  - `submit_distributed_train`, `train_pytorch_gpu`, `submit_lsdyna_job` 등을
+    부르기 직전에 "지금 들어갈 수 있나?" 가 궁금할 때
+  - 잡 큐가 얼마나 길게 쌓여 있는지 (`queue_depth`) 도 같이 보고 판단할 때
+
+  # 호출하지 말아야 할 때
+  - 파티션 전체 요약만 필요하면 `list_slurm_partitions`
+  - 노드 한 대 상세는 `show_slurm_node`
+  - 큐 (실행/대기 중) 자세히 보려면 `job_status`/`list_recent_jobs`
+
+  # 동작
+  1. `sinfo -h -p <partition> --format=%n|%T|%C|%G` (node|state|cpus(A/I/O/T)|gres) 로
+     파티션의 노드별 상태를 가져옴.
+  2. idle/mixed 노드만 후보로 간주. 각 노드에 free CPU 수와 free GPU 수를 추정.
+  3. 노드 단위로 `gpus + cpus_per_node` 요청을 충족하는 노드를 카운트.
+  4. `nodes` 만큼 후보가 있으면 `available_now: true`, 아니면 false.
+  5. `squeue -p <partition> --format=%i -h | wc -l` 로 queue_depth (pending+running).
+  6. 캐싱 없음 (§21.4).
+
+  # Pre-conditions
+  - 호스트 PATH 에 `sinfo`, `squeue` 가 있어야 합니다. 없으면 ok=false.
+  - `partition` 은 실제 존재해야 합니다. 없는 파티션 → sinfo 가 0건 반환 →
+    `available_now: false, candidates: []`.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "check_partition_capacity",
+    "request": {"partition": "gpu-a100", "gpus": 4, "nodes": 1, "cpus_per_node": 16},
+    "available_now": true,
+    "candidates": [{"node": "gpu03", "free_gpus": 4, "free_cpus": 32}],
+    "queue_depth": 3,
+    "hint": "1 node has the requested 4 GPUs free now. Expected start: immediate."
+  }
+  ```
+tags: [slurm, sinfo, squeue, partition, capacity, preflight, observability, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 30
+expose: catalog
+examples:
+  - title: gpu-a100 1노드 4-GPU 16-CPU 들어갈 수 있나
+    args: {partition: "gpu-a100", gpus: 4, nodes: 1, cpus_per_node: 16}
+  - title: cpu 파티션 2노드 32-CPU
+    args: {partition: "cpu", nodes: 2, cpus_per_node: 32}
+  - title: 가장 가벼운 형식 (그냥 파티션이 살아있나)
+    args: {partition: "cpu"}

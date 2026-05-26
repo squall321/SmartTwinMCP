@@ -1,0 +1,67 @@
+name: show_slurm_node
+version: 1.0.0
+summary: scontrol show node <name> 래퍼 — 단일 노드의 상세 상태/리소스/현재 작업 반환.
+description: |
+  `scontrol show node <node_name>` 을 호출해서 한 노드의 key=value 출력을 구조화된
+  JSON 으로 변환합니다. CPU/메모리 alloc-idle, GRES, 현재 실행 중인 JobID 목록 등을
+  뽑아 LLM 이 한눈에 볼 수 있게 합니다.
+
+  mode: read-all (§18.2). Observability 전용 — 노드를 mutate 하지 않습니다.
+  사용자 필터링도 없습니다 (어차피 노드 단위 정보라 다중사용자 격리와 무관).
+
+  # 언제 호출하는가
+  - 특정 노드 한 대의 상세가 필요할 때 ("gpu03 지금 뭐 돌고 있어?")
+  - `list_slurm_partitions` 로 파티션 상태를 본 다음 문제 있는 노드 한 대를 들여다보고 싶을 때
+  - `submit_*` 실패 후 "어느 노드에서 떨어졌나" 가 궁금할 때
+
+  # 호출하지 말아야 할 때
+  - 파티션 전체 요약이면 `list_slurm_partitions`
+  - 요청 가능 여부 verdict 면 `check_partition_capacity`
+  - squeue 자세히 보려면 `job_status` (sinfo/scontrol 와 squeue 를 섞지 않음, §21.5)
+
+  # 동작
+  - `scontrol show node <node_name>` (timeout 15초)
+  - 응답을 key=value 토큰 단위로 파싱.
+  - 표준 필드: `node_name, state, cpus_total, cpus_alloc, cpus_idle, mem_total_mb,
+    mem_alloc_mb, gres, current_jobs` (JobList= 에서 추출한 list).
+  - 그 외 모든 key=value 는 `raw_extras` 에 그대로 보존.
+  - 캐싱 없음 (§21.4).
+
+  # Pre-conditions
+  - 호스트 PATH 에 `scontrol` 이 있어야 합니다. 없으면 ok=false, reason="scontrol not on PATH".
+  - 존재하지 않는 노드 이름이면 scontrol 가 non-zero 로 종료 → ok=false.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "show_slurm_node",
+    "node": {
+      "node_name": "gpu03",
+      "state": "MIXED",
+      "cpus_total": 64,
+      "cpus_alloc": 32,
+      "cpus_idle": 32,
+      "mem_total_mb": 515000,
+      "mem_alloc_mb": 128000,
+      "gres": "gpu:a100:8",
+      "current_jobs": ["12345", "12346"]
+    },
+    "raw_extras": {
+      "Arch": "x86_64",
+      "OS": "Linux",
+      "Reason": "..."
+    }
+  }
+  ```
+tags: [slurm, scontrol, node, capacity, observability, mode-read-all]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 30
+expose: catalog
+examples:
+  - title: 일반 GPU 노드 상세
+    args: { node_name: "gpu03" }
+  - title: CPU 노드 상세
+    args: { node_name: "cpu-001" }

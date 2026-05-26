@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "get_inbound_webhook args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["webhook_id"],
+  "properties": {
+    "webhook_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Primary key of the row in inbound_webhooks.db. Obtain from list_inbound_webhooks (the 'webhook_id' field)."
+    }
+  }
+}

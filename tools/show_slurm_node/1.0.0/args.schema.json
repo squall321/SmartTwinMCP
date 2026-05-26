@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "show_slurm_node args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node_name"],
+  "properties": {
+    "node_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9._-]+$",
+      "description": "Slurm node name (e.g. 'gpu03', 'cpu-001'). Letters/digits/dot/underscore/hyphen only — Slurm node naming convention."
+    }
+  }
+}

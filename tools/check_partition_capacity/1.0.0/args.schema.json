@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "check_partition_capacity args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["partition"],
+  "properties": {
+    "partition": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9._-]+$",
+      "description": "Slurm partition name (e.g. 'cpu', 'gpu-a100'). Must exist in sinfo output."
+    },
+    "gpus": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64,
+      "default": 0,
+      "description": "GPUs required PER NODE. 0 = CPU-only. A node is a candidate only if it has at least this many free GPUs."
+    },
+    "nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "default": 1,
+      "description": "Number of nodes required. available_now=true iff at least this many candidate nodes exist."
+    },
+    "cpus_per_node": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256,
+      "default": 1,
+      "description": "CPUs required PER NODE. A node is a candidate only if it has at least this many free CPUs."
+    }
+  }
+}
