@@ -2648,3 +2648,507 @@ the same problem.
 | Default `highlight: "none"`                            | LLM gets indiscriminate tail. Errors-first is the useful default.|
 | Re-tail the whole file every call                      | For long runs, use `tail -n` not Python `readlines()`.           |
 | Forget `representative` markers                        | LLM can't tell which rank IDs were "picked"; will report all.    |
+
+---
+
+## 25. Audit log (LLM-driven decision history)
+
+A reasonable LLM session does many things: search the catalog, run a few
+read-only tools, then submit something big. **When the user revisits the
+session three days later and asks "wait, what gpus did you use for that
+sweep?" the answer must be reconstructible.** `registry.notes` is too freeform
+for that; per-row `extra` is per-tool. This is the cross-tool decision log.
+
+### 25.1 The audit table (third table in `/data/SmartTwinMCP/`)
+
+```sql
+CREATE TABLE audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at INTEGER NOT NULL,        -- unix epoch seconds
+    actor TEXT NOT NULL,                 -- $USER on the host (never an arg)
+    tool TEXT NOT NULL,                  -- qualified name: "submit_job@1.0.0"
+    action TEXT NOT NULL,                -- enum below
+    target_kind TEXT,                    -- "job" | "webhook" | "partition" | null
+    target_id TEXT,                      -- domain-specific identifier (string for portability)
+    summary TEXT NOT NULL,               -- one-line human-readable
+    detail TEXT                          -- JSON blob: args, response highlights
+);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action);
+```
+
+Path: `/data/SmartTwinMCP/audit.db`. Test override: `STMC_AUDIT_DB`
+(mirrors §9.2). WAL mode like the others.
+
+### 25.2 What goes in `action`
+
+Limited vocabulary — keep it grep-able:
+
+- `submit` — created a new job (any submit_* tool)
+- `cancel` — cancelled one or more jobs
+- `inspect` — read a job's status/logs/progress for the first time in this session
+- `acknowledge` — ack'd a webhook
+- `template_apply` — applied a §26 preset
+- `cost_estimate` — generated a §28 estimate
+
+**Don't** invent new actions ad-hoc. Adding one is a guide-level change.
+
+### 25.3 Who writes audit rows
+
+NOT every tool. Writing audit on every read-only call (`list_*`, `get_*`)
+floods the table for no value. Rule:
+
+- **Mutation tools (submit, cancel, ack, apply) MUST write one row** per
+  successful invocation. Failures don't get recorded (the caller will see
+  the failure response).
+- **Observability tools MUST NOT write rows**. Their information value is in
+  the response itself.
+- **Inspection tools (job_status, job_logs, job_progress) MAY write one row
+  per session-distinct target_id**. Heuristic: write iff the target_id +
+  actor + tool tuple hasn't appeared in the last 5 minutes. Skip if it has.
+
+### 25.4 Required helper — `_shared/audit.py`
+
+Add this module (it does not exist yet) so every audit-writing tool calls
+the same path. Sketch:
+
+```python
+# tools/_shared/audit.py
+import json, os, sqlite3, time
+DB_PATH = os.environ.get("STMC_AUDIT_DB") or "/data/SmartTwinMCP/audit.db"
+
+def record_event(
+    actor: str, tool: str, action: str, summary: str,
+    *, target_kind: str | None = None, target_id: str | None = None,
+    detail: dict | None = None,
+) -> int: ...
+
+def list_events(
+    limit: int = 50, since: int | None = None,
+    actor: str | None = None, tool: str | None = None,
+    action: str | None = None, target_id: str | None = None,
+) -> list[dict]: ...
+
+def session_seen(actor: str, tool: str, target_id: str, within_sec: int = 300) -> bool: ...
+```
+
+The first new audit-writing tool must add this file with stdlib-only deps.
+Subsequent tools import it.
+
+**Signature note:** `summary` is the 4th positional arg (after actor/tool/action).
+Everything else is keyword-only (`target_kind`, `target_id`, `detail`). This
+avoids the Python syntactic ambiguity of mixing default and non-default
+positional args.
+
+### 25.5 The MCP query tool
+
+Add `list_audit_events` at the same time as the helper:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
+    "since": { "type": "integer", "description": "unix epoch; events where occurred_at >= since" },
+    "actor": { "type": "string", "description": "Filter by OS user. Default: caller ($USER)." },
+    "tool": { "type": "string", "description": "Filter by qualified tool name." },
+    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate"] },
+    "target_id": { "type": "string" }
+  }
+}
+```
+
+`mode: own` by default — actor filter overrideable but defaults to `$USER`.
+
+**Reconciling with §18.4 (`mode: own` tools MUST NOT expose `owner`/`user`/`as_user`):**
+audit query is the documented exception. Reading another user's audit trail is
+benign (they can grep their own anyway). The §18.4 prohibition targets
+**mutation** tools, where an `as_user` arg would enable impersonation. A query
+filter is not impersonation. Lint rule L050 still expects `mode-own` tag here;
+the override happens at the argument layer, not the catalog layer.
+
+### 25.6 Response shape
+
+```json
+{
+  "ok": true,
+  "tool": "list_audit_events",
+  "count": 3,
+  "events": [
+    {
+      "id": 42,
+      "occurred_at": 1716_600_000,
+      "actor": "alice",
+      "tool": "submit_lsdyna_job@1.0.0",
+      "action": "submit",
+      "target_kind": "job",
+      "target_id": "stmc-7c3f81",
+      "summary": "submitted /data/cases/A.k on partition cpu (8 cpu, 32G, 02:00:00)",
+      "detail": { "k_file": "/data/cases/A.k", "ncpu": 8, "slurm_job_ids": ["12345"] }
+    },
+    ...
+  ]
+}
+```
+
+### 25.7 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Audit every read call                                  | Table fills with `inspect` noise. Use the 5-min dedup heuristic. |
+| Skip audit on submit because "registry already has it" | Registry is what; audit is when+why+who. Different signal.       |
+| Put the full response JSON in `detail`                 | Bloats the DB. Pick 3-5 fields the LLM will want to recall.      |
+| Let the LLM set `actor`                                | Identity is `$USER`. Filter param is a query knob, not write.    |
+| Reuse `registry.notes` for cross-tool history          | Tied to one row; lost when the job is purged.                    |
+
+---
+
+## 26. Templates / presets (named job configurations)
+
+After a few rounds of LS-DYNA setup the user has half a dozen tier-1 / tier-2
+parameter combos they reuse. Today those live in chat history or in the
+user's head. **Templates make them first-class.** A preset is a named
+dict-of-args that any submit_* tool can apply.
+
+### 26.1 Storage
+
+Templates live on disk, NOT in a database — they're meant to be diffable,
+git-trackable, and shareable across users:
+
+```text
+/data/SmartTwinMCP/templates/
+  <name>.yaml
+```
+
+Schema for each `.yaml`:
+
+```yaml
+name: tier1_gpu_pytorch_a100x4
+description: Standard 4×A100 distributed PyTorch run (8h, NCCL on, conservative mem).
+created_at: "2026-05-25T12:00:00Z"   # quoted — see "Serialization" below
+created_by: alice
+tags: [gpu, distributed, tier1]      # optional, free-form; used by list_templates filter
+applies_to:                          # which tools accept this template
+  - submit_distributed_train
+  - train_pytorch_gpu
+args:                                # raw arg map merged into the tool call
+  gpus: 4
+  gpu_type: a100
+  gpu_partition: gpu-a100
+  nodes: 1
+  ntasks_per_node: 4
+  time_limit: "08:00:00"
+  mem_per_cpu: 4G
+notes: |
+  Validated against torchrun 2.3, NCCL 2.20.
+```
+
+Test override path: `STMC_TEMPLATES_DIR` (default
+`/data/SmartTwinMCP/templates/`).
+
+**Authoritative name:** the YAML `name:` field wins; the file stem is a
+fallback for templates that omit `name:`. List/get tools should refuse
+mismatches (warn or fail, your call — current impl: file stem fallback,
+no warning).
+
+**Serialization gotcha — quote ISO-8601 datetimes.** PyYAML `safe_load`
+parses `2026-05-25T12:00:00Z` (unquoted) into a Python `datetime`, which
+`json.dumps` then refuses with `TypeError`. **Always quote ISO timestamps**
+in template YAML (`"2026-05-25T12:00:00Z"`). The tools must also call
+`json.dumps(..., default=str)` as a defensive belt — same applies to §27
+cron YAMLs and §28 cost_rates.yaml.
+
+### 26.2 The three MCP tools
+
+Standard set:
+
+- `list_templates` — page through the templates dir. Filter by
+  `applies_to` and tag. `mode: read-all`.
+- `get_template` — fetch one by name. `mode: read-all`.
+- `apply_template_args` — given `name` and `overrides: {}`, return the
+  merged arg dict the caller can pass to a `submit_*` tool. **Does not
+  invoke the target tool.** Composition is the LLM's job — apply_template
+  produces args; the LLM then calls submit_* with them. Keeps responsibilities
+  clean.
+
+`list_templates` may omit a `limit` arg in v1 — template directories are
+expected to be dozens of files, not thousands. Add `limit` (default 100) if a
+deployment grows beyond that.
+
+A separate fourth tool `save_template` is **out of scope** for the first
+implementation: deciding whose .yaml gets written is a multi-user concern
+that needs §18-style policy. Add later if needed.
+
+### 26.3 Why apply_template_args is read-only
+
+If `apply_template_args` directly invoked the target tool, the LLM would
+have one tool call doing two things: pick the preset AND submit. That hides
+the actual sbatch params from the audit log (§25). The two-step pattern
+makes the substitution visible:
+
+```text
+1. apply_template_args(name="tier1_gpu_pytorch_a100x4", overrides={time_limit: "12:00:00"})
+   -> {gpus: 4, gpu_type: a100, ..., time_limit: "12:00:00"}
+2. submit_distributed_train(<those args>)
+   -> audit row records the FINAL args, including the overridden time_limit
+```
+
+### 26.4 The `applies_to` whitelist
+
+A template's `applies_to` list is enforced — if the caller hands the args to
+a tool not in the list, the target tool's schema will probably reject them
+anyway (different required keys), but `apply_template_args` should also
+return a `compatible_tools: [...]` field so the LLM doesn't even try.
+
+### 26.5 Response shape (`apply_template_args`)
+
+```json
+{
+  "ok": true,
+  "tool": "apply_template_args",
+  "template_name": "tier1_gpu_pytorch_a100x4",
+  "compatible_tools": ["submit_distributed_train", "train_pytorch_gpu"],
+  "args": {
+    "gpus": 4, "gpu_type": "a100", "gpu_partition": "gpu-a100",
+    "nodes": 1, "ntasks_per_node": 4, "time_limit": "12:00:00",
+    "mem_per_cpu": "4G"
+  },
+  "applied_overrides": { "time_limit": "12:00:00" },
+  "hint": "Pass `args` directly to one of compatible_tools."
+}
+```
+
+### 26.6 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Have `apply_template_args` actually submit             | Hides resolved args from audit (§25) and from the user.          |
+| Store templates in SQLite                              | Not diffable. Templates are configs; configs belong in YAML.     |
+| Skip `applies_to`                                      | A drop-test preset applied to a webhook tool wastes a turn.      |
+| Allow template inheritance / `extends:`                | Templates are leaf configs. Composition = overrides at call site.|
+| Let the LLM write templates via `save_template`        | First version is read-only. Write needs §18 policy.              |
+
+---
+
+## 27. Scheduled / recurring jobs (external cron)
+
+MCP servers are stateless across sessions — they cannot themselves "wake up
+at 2am and run a tool". Scheduled execution requires external infra (cron,
+systemd timer, k8s CronJob). This section is for tools that **manage cron
+specs**, not for tools that emulate scheduling inside MCP.
+
+### 27.1 The sidecar pattern (mirrors §17.1)
+
+The expected deployment:
+
+```text
+/data/SmartTwinMCP/cron/
+  <name>.yaml       # one cron entry per file
+```
+
+A separate process (a host crond, k8s CronJob controller, ...) reads these
+and runs the named tool at the named cadence. **This repo's tools only
+manage the YAML files.** Don't try to install crontabs from MCP.
+
+```yaml
+# /data/SmartTwinMCP/cron/<name>.yaml
+name: daily_drop_collect
+description: Every weekday at 2am, pull yesterday's completed runs.
+schedule: "0 2 * * 1-5"         # standard cron expression
+tool: job_collect@1.0.0         # qualified tool name
+args:                            # static args passed every invocation
+  since: { _runtime: "now - 24h" }   # see §27.3
+enabled: true
+created_at: 2026-05-25T12:00:00Z
+created_by: alice
+last_run_at: null               # populated by the runner
+last_run_status: null           # "ok" | "error" | "skipped"
+```
+
+Test override: `STMC_CRON_DIR` (default `/data/SmartTwinMCP/cron/`).
+
+**When `STMC_CRON_DIR` doesn't exist** (sidecar not deployed yet):
+
+- `list_scheduled_jobs` → `ok:true, count:0, scheduled:[]` (no installs is a
+  valid empty state).
+- `get_scheduled_job` / `enable_scheduled_job` → `ok:false` with
+  `reason: "cron dir not initialized — sidecar not deployed?"` and `expected_at`
+  pointing at the missing path. Target-by-name calls have nothing to read.
+
+### 27.2 The MCP tools
+
+- `list_scheduled_jobs` (`mode: read-all`) — page through the cron dir.
+- `get_scheduled_job` — by name. `mode: read-all`.
+- `enable_scheduled_job` / `disable_scheduled_job` — flip the `enabled`
+  flag. `mode: own` (only the `created_by` user, or `mode-shared` if you
+  later add shared specs).
+- **No `create_scheduled_job` in the first impl.** Same reason as §26.5:
+  writing requires multi-user policy. Hand-author the YAMLs for now.
+
+### 27.3 Runtime args (`_runtime:` keys)
+
+Static args don't always work — a daily collect needs "yesterday's date" not
+"epoch 1716500000 forever". Reserve a `_runtime:` namespace for values the
+sidecar resolves at execution time:
+
+```yaml
+args:
+  since: { _runtime: "now - 24h" }      # epoch at run time minus 86400
+  date_range: { _runtime: "yesterday_utc" }
+```
+
+The supported `_runtime` operators are part of the SIDECAR's contract, not
+this catalog's. The MCP tools just read and write the YAML opaquely. Document
+the operators you actually use in your sidecar.
+
+### 27.4 Response shape (`list_scheduled_jobs`)
+
+```json
+{
+  "ok": true,
+  "tool": "list_scheduled_jobs",
+  "count": 2,
+  "scheduled": [
+    {
+      "name": "daily_drop_collect",
+      "schedule": "0 2 * * 1-5",
+      "tool": "job_collect@1.0.0",
+      "enabled": true,
+      "last_run_at": 1716_525_600,
+      "last_run_status": "ok",
+      "created_by": "alice"
+    }, ...
+  ]
+}
+```
+
+**Sort order:** ascending by `name`. Deterministic across runs so the LLM
+can refer to "the third entry" if needed.
+
+**`get_scheduled_job` envelope:** `{ok, tool, scheduled: {...full yaml body...}}`.
+The full body includes raw `_runtime:` keys per §27.3 — MCP does not resolve
+them.
+
+### 27.5 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Spawn a cron daemon inside an MCP tool                 | MCP is stateless. Use a real sidecar.                            |
+| Resolve `_runtime: now - 24h` inside MCP               | Sidecar resolves at execution. MCP just reads/writes YAML.       |
+| `enable_scheduled_job` for any user                    | `mode: own` — only the spec's `created_by` can flip its switch.  |
+| Cron-schedule observability tools                      | Pointless — observability tools have no side effects to record.  |
+
+---
+
+## 28. Cost / resource accounting
+
+Before submitting a 4×A100 × 48h job, the user should see "this will cost
+≈ ₩X". After the job runs, they should be able to ask "what did I spend
+this month?" Both need a cost-rate table outside the catalog plus tools
+that read it.
+
+### 28.1 The rate table
+
+Rates change per cluster contract. Keep them in YAML outside the catalog:
+
+```yaml
+# /data/SmartTwinMCP/cost_rates.yaml
+unit: KRW           # also accepts USD, JPY, etc.
+last_updated: 2026-05-25
+rates:
+  cpu_partition: { cpu_hour: 100 }       # per cpu per hour
+  cpu_large:     { cpu_hour: 150 }
+  gpu_a100:      { cpu_hour: 200, gpu_hour: 5000 }
+  gpu_h100:      { cpu_hour: 200, gpu_hour: 8000 }
+```
+
+Test override: `STMC_COST_RATES_FILE` (default
+`/data/SmartTwinMCP/cost_rates.yaml`).
+
+If the file is missing, cost tools fail with a clean
+`reason: "cost_rates.yaml not deployed — ask ops to install it"`. Don't
+guess defaults.
+
+**YAML date serialization:** `last_updated: 2026-05-25` (unquoted) parses
+into a Python `date`, which `json.dumps` refuses. Either quote the field
+(`last_updated: "2026-05-25"`) OR have your tool coerce to string before
+emitting. Same gotcha as §26.1 — apply `json.dumps(..., default=str)` as a
+defensive belt.
+
+**CPU-only partition rates** (e.g. `cpu: { cpu_hour: 100 }`) may omit
+`gpu_hour`. Treat missing `gpu_hour` as 0 — `estimate_cost` called with
+`gpus=N` on a CPU partition returns the CPU-only cost without raising.
+The caller (LLM) shouldn't be requesting GPUs on a CPU partition anyway;
+§14.1's cross-validation catches that earlier.
+
+### 28.2 Two MCP tools
+
+- `estimate_cost` (`mode: read-all`) — pre-flight. Given partition, gpus,
+  cpus, time_limit → cost estimate. No side effects, no registry/audit
+  writes (it's a calculator).
+- `summarize_costs` (`mode: own`) — post-hoc. Aggregates over registry rows
+  (caller's only) for a date range. Uses `extra.gpus`/`extra.cpus`
+  (§14.4 / §16.5) + a `time_limit` field on `extra` to compute realized
+  cost. **Not all existing submit_* tools record `time_limit` into `extra`
+  yet** — rows missing it (or missing cost-relevant fields generally) get
+  counted under `skipped: N` in the response rather than raising. Returns
+  total + per-tool / per-partition breakdowns + the `skipped` count.
+
+### 28.3 `estimate_cost` args
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["partition", "time_limit"],
+  "properties": {
+    "partition": { "type": "string", "description": "Slurm partition name." },
+    "cpus": { "type": "integer", "minimum": 1, "default": 1 },
+    "gpus": { "type": "integer", "minimum": 0, "default": 0 },
+    "nodes": { "type": "integer", "minimum": 1, "default": 1, "description": "Multiplier across nodes (§16)." },
+    "time_limit": { "type": "string", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$" }
+  }
+}
+```
+
+Formula: `hours = parse(time_limit); per_node = hours * (cpus * rate.cpu_hour + gpus * rate.gpu_hour); total = per_node * nodes`. The math is in the tool, not in the
+sidecar — keeps audit trail self-contained.
+
+### 28.4 Response (`estimate_cost`)
+
+```json
+{
+  "ok": true,
+  "tool": "estimate_cost",
+  "request": {"partition": "gpu-a100", "cpus": 32, "gpus": 4, "nodes": 1, "time_limit": "08:00:00"},
+  "unit": "KRW",
+  "hours": 8.0,
+  "breakdown": {
+    "cpu_hours_cost": 51200,
+    "gpu_hours_cost": 160000,
+    "node_multiplier": 1
+  },
+  "estimated_total": 211200,
+  "rate_source_updated": "2026-05-25",
+  "caveat": "Wall-time estimate. Actual cost depends on job duration."
+}
+```
+
+**`breakdown` values are PER-NODE; `estimated_total = (cpu_hours_cost +
+gpu_hours_cost) × node_multiplier`.** This keeps the math visible — a request
+with `nodes: 4` shows the per-node cost AND the multiplier separately, so the
+LLM can explain "4 × 211200 = 844800" without inventing intermediate numbers.
+
+`summarize_costs` returns `{period, total, by_tool: [...], by_partition: [...], jobs_counted: N}`.
+
+### 28.5 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Bake rates into Python code                            | Rates change per contract; YAML lets ops edit without a release. |
+| Charge `mixed` GPU nodes at full rate                  | Per §21.3 free-GPU rule — conservative or scontrol drilldown.    |
+| Audit every `estimate_cost` call                       | It's a calculator. §25.3 says no audit on observability tools.   |
+| `summarize_costs` over all users by default            | mode: own. Cross-user roll-ups need explicit `actor` filter.     |
+| Skip `caveat` in the response                          | Estimate-vs-actual surprises users. Always include disclaimer.   |
