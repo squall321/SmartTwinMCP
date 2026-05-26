@@ -1565,7 +1565,11 @@ Standard set (write each as a separate tool; `expose: catalog`):
 - `get_inbound_webhook` — fetch one row by `id`.
 - `ack_inbound_webhook` — mark a row `acked` (or `error`, with a note). Used after
   the LLM has acted on the event. Idempotent.
-- `peek_inbound_webhook` — peek at the next pending row without acking.
+- `peek_inbound_webhook` — peek at the next pending row without acking. **FIFO:
+  smallest `id` first** (the queue is a queue, not a stack). Optional filters
+  may narrow `source` / `event_type`. If nothing matches, return
+  `{ok: true, webhook: null, reason: "no pending webhooks"}` — an empty queue
+  is not a failure.
 
 Don't go beyond this set unless you have a concrete need. The queue is dumb on
 purpose.
@@ -2113,19 +2117,47 @@ def run_slurm(*args, timeout=15):
 ```
 
 Use **`sinfo --format=...`** with explicit columns rather than the default — the
-default format is meant for human eyes and varies between Slurm versions:
+default format is meant for human eyes and varies between Slurm versions.
+
+Two modes you'll need.
+
+**Partition aggregate** (`list_slurm_partitions`): one row per partition+state.
 
 ```python
 fmt = "%P|%a|%l|%D|%T|%C|%G"   # partition|avail|timelimit|nodes|state|cpus|gres
 out = run_slurm("sinfo", "-h", f"--format={fmt}")
-for line in out.strip().splitlines():
-    parts = line.split("|")
-    # ...
+```
+
+**Per-node detail** (`check_partition_capacity`): one row per node. Pass `-N`
+and a per-node format string, optionally with `-p <partition>` to scope:
+
+```python
+fmt = "%n|%T|%C|%G"            # node|state|cpus(alloc/idle/other/total)|gres
+out = run_slurm("sinfo", "-N", "-h", "-p", partition, f"--format={fmt}")
 ```
 
 **`scontrol show node <name>`** returns key=value text — parse it with a tiny
 regex or a `dict(token.split("=", 1) for token in tokens)` over `re.split(r"\s+", ...)`.
 Don't trust whitespace inside values.
+
+**`scontrol`'s `Reason=...` field wraps onto continuation lines** that don't
+contain `=`. A robust parser must treat any whitespace-stripped line without `=`
+as a continuation of the previous value:
+
+```python
+fields = {}
+last_key = None
+for line in out.splitlines():
+    for token in re.split(r"\s+", line.strip()):
+        if not token:
+            continue
+        if "=" in token:
+            k, v = token.split("=", 1)
+            fields[k] = v
+            last_key = k
+        elif last_key:
+            fields[last_key] = (fields[last_key] + " " + token).strip()
+```
 
 ### 21.3 Response shape (`list_slurm_partitions`)
 
@@ -2202,6 +2234,20 @@ For `check_partition_capacity`, include a clear verdict:
   "hint": "1 node has the requested 4 GPUs free now. Expected start: immediate."
 }
 ```
+
+**Free-GPU accounting on `mixed` nodes.** `sinfo %G` reports TOTAL GRES per
+node, not free. On a `mixed` node some GPUs are already allocated and `sinfo`
+alone can't tell which. **The conservative default is `free_gpus = 0` on
+mixed nodes** — i.e. only `idle` nodes count toward `candidates`. This
+under-reports capacity but never misleads the LLM into submitting a job that
+will queue when it expected to run.
+
+If precision matters more than simplicity, drill into `scontrol show node
+<name>` for each mixed candidate and parse `AllocTRES=gres/gpu=N` vs
+`CfgTRES=gres/gpu=M`. That's one extra `scontrol` invocation per candidate
+node; only do it if `idle`-only counting returns insufficient capacity AND
+mixed nodes exist. Document whichever choice you made in the tool's response
+(`"free_gpu_method": "conservative" | "scontrol_drilldown"`).
 
 ### 21.4 Caching
 
