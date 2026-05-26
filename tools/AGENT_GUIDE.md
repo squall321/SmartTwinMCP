@@ -2691,6 +2691,8 @@ Limited vocabulary — keep it grep-able:
 - `acknowledge` — ack'd a webhook
 - `template_apply` — applied a §26 preset
 - `cost_estimate` — generated a §28 estimate
+- `config_toggle` — flipped a config flag (e.g. §27 `enable_scheduled_job`).
+  Use this when the mutation is metadata-only, no compute job involved.
 
 **Don't** invent new actions ad-hoc. Adding one is a guide-level change.
 
@@ -2707,6 +2709,110 @@ floods the table for no value. Rule:
 - **Inspection tools (job_status, job_logs, job_progress) MAY write one row
   per session-distinct target_id**. Heuristic: write iff the target_id +
   actor + tool tuple hasn't appeared in the last 5 minutes. Skip if it has.
+
+Lint rule **L070** enforces this — any tool that `_is_mutation_tool` flags
+(name prefix matches submit/cancel/etc., OR has a `dry_run` arg) must call
+`record_event(...)` somewhere in its `script.sh`. False positives are
+suppressible per-tool with `--disable L070`, but the bar should be high.
+
+### 25.3.1 Wiring recipe — `transport: local` tools
+
+For local-transport scripts (the common case), add one block on the success
+path right after the registry write:
+
+```python
+import sys, os
+sys.path.insert(0, os.environ.get("SHARED_DIR") or "")  # already set by the boilerplate
+import audit
+
+actor = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+audit.record_event(
+    actor=actor,
+    tool="submit_lsdyna_job@1.0.0",       # qualified name, hard-code per script
+    action="submit",                       # one of §25.2's vocabulary
+    summary=f"submitted {k_file} ({ncpu}cpu/{memory}/{time_limit}) -> slurm {slurm_ids}",
+    target_kind="job",
+    target_id=str(reg_id),                 # registry_id, slurm_job_id, webhook_id, …
+    detail={                                # 3-5 fields, NOT the full response
+        "k_file": k_file, "ncpu": ncpu, "memory": memory,
+        "slurm_job_ids": slurm_ids, "dry_run": dry_run,
+    },
+)
+```
+
+**Failure path stays silent.** Don't audit on `fail()` — the user already
+sees the failure response. Auditing failures pollutes the table with noise.
+
+**Adding audit to a tool that didn't import `_shared/` before.** Some
+tools (especially zero-arg or webhook tools) historically had no
+`SHARED_DIR` setup. Add both the bash boilerplate AND the python-side
+`sys.path` insert at the top of the script:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+export SHARED_DIR="$(cd "$(dirname "$0")"/../../_shared && pwd)"   # add this
+
+python3 - <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["SHARED_DIR"])                       # add this
+import audit                                                       # then this
+# ... rest of the existing body ...
+PY
+```
+
+### 25.3.2 SSH-transport tools: inline the SQL
+
+Per §22.2, ssh-transport scripts execute on the REMOTE host and can't import
+`_shared/audit.py`. Inline a minimal SQLite insert. Same DB path lives on the
+shared filesystem the cluster mounts, so the audit row is visible to local
+queries:
+
+**Wrap the inline insert in a `def record_event(...)` helper** — otherwise
+lint rule L070 (a static grep for `record_event(`) won't find the audit
+call and will flag the tool as un-audited. The helper name is the contract
+that links the gude-recommended pattern to the lint check:
+
+```bash
+# inside the remote-running script.sh body
+python3 - <<'PY'
+import json, os, sqlite3, time
+
+def record_event(actor, tool, action, summary, *,
+                 target_kind=None, target_id=None, detail=None):
+    """Inline §25.3.2 audit writer for ssh-transport tools.
+    Schema verbatim from §25.1 — do not drift."""
+    db = os.environ.get("STMC_AUDIT_DB") or "/data/SmartTwinMCP/audit.db"
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE IF NOT EXISTS audit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL,
+      actor TEXT NOT NULL, tool TEXT NOT NULL, action TEXT NOT NULL,
+      target_kind TEXT, target_id TEXT, summary TEXT NOT NULL, detail TEXT)""")
+    con.execute(
+        "INSERT INTO audit_events (occurred_at, actor, tool, action, target_kind, target_id, summary, detail) VALUES (?,?,?,?,?,?,?,?)",
+        (int(time.time()), actor, tool, action, target_kind, str(target_id) if target_id is not None else None,
+         summary, json.dumps(detail) if detail else None),
+    )
+    con.commit()
+    con.close()
+
+# ... your normal script body that produces reg_id, summary_str, detail dict ...
+
+record_event(
+    actor=os.environ.get("USER", "unknown"),
+    tool="submit_lsdyna_remote@1.1.0",
+    action="submit",
+    summary=summary_str,
+    target_kind="job",
+    target_id=reg_id,
+    detail=detail,
+)
+PY
+```
+
+The schema must match §25.1 EXACTLY. The DDL above is the schema verbatim.
+**Don't drift** — a remote-inlined schema that diverges silently breaks
+local queries.
 
 ### 25.4 Required helper — `_shared/audit.py`
 
@@ -2754,7 +2860,7 @@ Add `list_audit_events` at the same time as the helper:
     "since": { "type": "integer", "description": "unix epoch; events where occurred_at >= since" },
     "actor": { "type": "string", "description": "Filter by OS user. Default: caller ($USER)." },
     "tool": { "type": "string", "description": "Filter by qualified tool name." },
-    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate"] },
+    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle"] },
     "target_id": { "type": "string" }
   }
 }
