@@ -2271,3 +2271,371 @@ decide what to do.
 | Mix `sinfo` and `squeue` into one tool                  | One concern per tool. Use `job_status` for squeue.               |
 | Add `mode: own` here                                    | This category is observability across the whole cluster.         |
 | Cache inside the tool                                   | LLM gets stale state. Let the client cache if it wants.          |
+
+---
+
+## 22. SSH remote execution
+
+§6.2 documented `transport: ssh` years ago but no tool in this catalog uses it.
+This section is the convention layer for tools whose `script.sh` runs on a
+cluster head node instead of locally.
+
+### 22.1 When to choose `transport: ssh` vs `local`
+
+- **`transport: ssh`**: the tool's correctness depends on commands that ONLY
+  exist on the cluster head node (`sbatch`, `squeue`, `scontrol`, site-local
+  scripts in `/opt/site/bin/...`). Most existing tools in this catalog use
+  `local` because the dev host happens to have Slurm CLI too — that's a
+  coincidence, not a contract.
+- **`transport: local` with `ssh` inside the script**: don't. If you find
+  yourself writing `ssh head subprocess.run(...)` inside a local script, your
+  transport choice is wrong. Switch to `transport: ssh`.
+
+### 22.2 Self-containment rule
+
+The runner pipes `script.sh` over `ssh host bash -s` (see [runner.py](../src/smarttwin_mcp/runner.py)).
+**The script body executes on the REMOTE host. `_shared/` is not shipped.**
+Anything you import from `_shared/` will fail with `ModuleNotFoundError` on
+the remote.
+
+Practical implications:
+
+- Inline whatever helpers you need. A 20-line SQLite write or KooChainRun call
+  inside `script.sh` is fine.
+- Registry writes still must hit the production `jobs.db`. That DB lives on
+  the same shared filesystem the cluster mounts — the script can write to it
+  directly. Confirm the path is mounted on the remote: `[ -f /data/SmartTwinMCP/jobs.db ]`
+  in your script, fail clearly if not.
+- `STMC_JOBS_DB` test override still works — ssh transport forwards the env via
+  the `env:` field in `meta.yaml`. Set it there for `transport: ssh` test runs.
+
+### 22.3 Required `meta.yaml` fields
+
+```yaml
+transport:
+  kind: ssh
+  host: ${STMC_CLUSTER_HEAD}              # env-interpolated like §15.3
+  user: ${STMC_CLUSTER_USER:-svc-stmc}    # default user if env unset
+  key_path: ${STMC_SSH_KEY:-~/.ssh/id_ed25519}
+  port: 22
+  remote_cwd: /scratch/stmc-jobs          # optional but recommended
+  env:
+    PATH: /usr/local/slurm/bin:/usr/bin:/bin
+    STMC_JOBS_DB: /data/SmartTwinMCP/jobs.db
+  timeout_sec: 300
+```
+
+**Always use env interpolation for `host`/`user`/`key_path`** — hard-coding a
+hostname in a committed `meta.yaml` locks the catalog to one site. The runner
+returns a clean error before connecting if any required env is missing
+(matches §15.3 semantics for HTTP).
+
+### 22.4 Required env vars for SSH tools
+
+| Env var               | Purpose                                            | Default if unset             |
+|-----------------------|----------------------------------------------------|------------------------------|
+| `STMC_CLUSTER_HEAD`   | Hostname/IP of the cluster head node.              | (required, no default)       |
+| `STMC_CLUSTER_USER`   | Username to log in as.                             | `svc-stmc`                   |
+| `STMC_SSH_KEY`        | Path to the private key. Must be 0600.             | `~/.ssh/id_ed25519`          |
+
+Document these at the top of the tool's `description` so the LLM can tell the
+user what to set up.
+
+### 22.5 Connection failure shape
+
+When ssh can't connect, the runner returns:
+
+```json
+{
+  "ok": false,
+  "transport": "ssh",
+  "stderr": "ssh: connect to host ... port 22: Connection timed out",
+  "command": "ssh -p 22 -i ... user@host ..."
+}
+```
+
+Tools should NOT retry on connection failure — let the LLM and user decide. A
+`fail()` inside the script body is for problems detected after ssh succeeded.
+
+### 22.6 Idempotency under partial failure
+
+SSH calls can hang up mid-execution (network blip, head reboot). Your script
+must be re-runnable without making things worse:
+
+- **Submission tools**: check the registry BEFORE submitting. The dedup key is
+  the **most specific identifier of the input** — for an LS-DYNA raw tool that's
+  `extra.k_file`, for a KooChainRun drop tool it's `work_dir` (one config per
+  dir). Pick the key that uniquely identifies "this same submission" for your
+  tool, document it in the tool's `description`, and if a matching row has
+  `slurm_job_ids` set within the last 60 seconds, return the existing IDs with
+  a `note: "duplicate submission suppressed"` rather than submitting twice.
+- **Cancel/mutation tools**: same; if the target row is already in the desired
+  state, return `idempotent: true` (mirrors the §17.5 ack pattern).
+
+### 22.7 Anti-patterns
+
+| Don't                                                   | Why                                                              |
+|---------------------------------------------------------|------------------------------------------------------------------|
+| Hard-code `host: head01.cluster.internal` in meta.yaml  | Site-locked. Use `${STMC_CLUSTER_HEAD}`.                         |
+| `import registry` inside an ssh-transport script        | `_shared/` isn't on the remote. Inline the SQL.                  |
+| Retry ssh connections inside the tool                   | Bad network is a user-visible problem. Let it surface.           |
+| Mix `transport: local` + `ssh` subprocess inside script | Use `transport: ssh`. The runner handles it.                     |
+| Forget to forward `STMC_JOBS_DB` via `env:`             | Test override won't reach the remote; you'll hit prod.           |
+| Assume `/data/...` is mounted on the remote             | Probe it (`[ -d /data/SmartTwinMCP ]`) and fail cleanly if not.  |
+
+---
+
+## 23. Result collection / download
+
+Tools that move job output back to the user's workstation (or to a known
+shared location). Existing `job_collect` runs KooChainRun's collect step,
+but there's no convention yet for "give me the d3plot for job 42 on my laptop".
+
+### 23.1 The 3 destination modes
+
+A result-fetching tool MUST declare one of:
+
+- **`destination: local`** — the tool's caller is on the same filesystem as
+  the cluster output. Just verify the file exists; return its absolute path.
+  No data movement.
+- **`destination: rsync`** — pull files to a target path the user specifies.
+  Uses `rsync -av --partial --progress` over ssh. Default mode for "download
+  this job's d3plot".
+- **`destination: presigned_url`** — for very large files. Upload to a
+  configured S3-compatible bucket, return a time-limited URL. **Sidecar
+  required** (§17.1 pattern): bucket creds live outside the catalog.
+
+### 23.2 Required args
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "allOf": [
+    { "oneOf": [{"required": ["registry_id"]}, {"required": ["work_dir"]}] },
+    { "required": ["destination"] }
+  ],
+  "properties": {
+    "registry_id": { "type": "integer", "minimum": 1 },
+    "work_dir": { "type": "string", "pattern": "^/.+" },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Filename globs relative to output_dir. e.g. ['d3plot*', 'mes0000']. Default: ['d3plot*']."
+    },
+    "destination": { "type": "string", "enum": ["local", "rsync", "presigned_url"] },
+    "rsync_target": {
+      "type": "string",
+      "description": "Required when destination=rsync. Absolute path on the caller's host or rsync URL like 'user@host:/path'."
+    },
+    "max_total_bytes": {
+      "type": "integer", "minimum": 1, "maximum": 1099511627776,
+      "default": 53687091200,
+      "description": "Hard cap on total bytes transferred. Default 50GB. Fails before transfer if exceeded."
+    }
+  }
+}
+```
+
+`destination` is required (the `allOf`/`required` pair above enforces this on
+top of the lookup `oneOf`). `mode: own` per §18 (a fetch is a read, but it
+exposes another user's data on disk — gate it).
+
+### 23.3 The pre-transfer size check
+
+**Source directory:** glob against `row["output_dir"]` if set, falling back to
+`row["work_dir"]`. The two are equal for raw lsdyna runs but `output_dir` is
+the right anchor for drop simulations (KooChainRun writes results into a
+subdir).
+
+Always size up the source before transferring. Either `subprocess + find` or
+stdlib `glob` is fine — they produce equivalent file lists:
+
+```python
+import glob, os
+src_root = row.get("output_dir") or row["work_dir"]
+files = []
+for pattern in args.get("files", ["d3plot*"]):
+    files.extend(glob.glob(os.path.join(src_root, "**", pattern), recursive=True))
+total = sum(os.path.getsize(f) for f in files)
+if total > args["max_total_bytes"]:
+    job_helpers.fail(
+        f"transfer would exceed cap: {total} > {args['max_total_bytes']}. "
+        f"Narrow `files` or raise max_total_bytes.",
+        total=total, file_count=len(files),
+    )
+```
+
+This catches `files: ["*"]` against a 500GB simulation directory BEFORE rsync
+starts saturating the disk.
+
+**`rsync_target` directory creation:** for local target paths (no `user@host:`
+prefix), `mkdir -p` the target before invoking rsync. For remote targets,
+leave creation to rsync's `--mkpath` flag or to the user (sshing in to create
+the dir would be a transport mixup — keep this tool's transport `local` and
+let rsync handle the network).
+
+### 23.4 Response shape
+
+```json
+{
+  "ok": true,
+  "tool": "fetch_job_output",
+  "registry_id": 42,
+  "destination": "rsync",
+  "rsync_target": "/home/alice/local_runs/case42",
+  "files_transferred": 18,
+  "bytes_transferred": 4823423109,
+  "duration_sec": 38.2,
+  "rsync_log_tail": "<last 20 lines of rsync output>"
+}
+```
+
+For `destination: local`, return `paths: [...]` (absolute paths). Also include
+`files_transferred` (= len(paths)) and `bytes_transferred` (= total size) so
+the LLM doesn't have to re-stat; `rsync_log_tail` is omitted and
+`duration_sec` is `0`. For `destination: presigned_url`, return
+`urls: [{file, url, expires_at}, ...]`.
+
+### 23.5 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Default `files: ["*"]`                                 | First `fetch_job_output` call copies the whole 500GB run.        |
+| Skip the pre-transfer size check                       | rsync starts, fills the disk, fails halfway, leaves partial.     |
+| Use scp instead of rsync                               | No `--partial`, no resume, no progress. rsync is the standard.   |
+| Stream the rsync stdout into the JSON response         | Multi-MB string in stdout kills the MCP client. Return tail only.|
+| Default `max_total_bytes` to "no cap"                  | Same as no size check. 50GB default is generous; raise on ask.   |
+| Run `destination: rsync` synchronously from MCP        | Long calls block the LLM. For >5GB, prefer presigned_url.        |
+
+---
+
+## 24. MPI debugging (rank-aware log inspection)
+
+`job_logs` (§existing) returns a flat tail of stdout/stderr. For multi-node MPI
+runs (§16), the user usually wants **"what did rank 0 say"** or **"which rank
+hit OOM"** — single-stream tail loses that. A separate `job_logs_mpi` tool
+parses per-rank output and surfaces the structure.
+
+### 24.1 Where rank-tagged output comes from
+
+Three common shapes — your tool must detect which is in use:
+
+1. **Per-rank file** (cleanest). The user's training script writes
+   `<work_dir>/rank.<N>.log` per rank. Look for that pattern first.
+2. **Prefixed lines in the unified slurm.out**. `srun --label` prefixes each
+   line with `<rank>:`. Detect by sampling **the first 1000 non-empty lines**:
+   if ≥80% start with `^\d+:`, treat as labeled. Cap the sample so huge
+   unified logs don't slow down format detection.
+3. **Unlabeled unified stream**. Fall back to grep-based rank inference: lines
+   matching `\b(rank|RANK|MPI_RANK)[=: ]\s*(\d+)\b` carry their own rank tag,
+   everything else is "rank unknown".
+
+Pick the first available signal; don't try to merge formats.
+
+### 24.2 Args
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [{"required": ["registry_id"]}, {"required": ["work_dir"]}],
+  "properties": {
+    "registry_id": { "type": "integer", "minimum": 1 },
+    "work_dir": { "type": "string", "pattern": "^/.+" },
+    "ranks": {
+      "type": "array", "items": {"type": "integer", "minimum": -1},
+      "description": "Which ranks to return. Default: [0] + any rank with ERROR/Traceback. Use [-1] to mean 'all detected ranks' — the sentinel; must be the sole element when used."
+    },
+    "lines": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 200 },
+    "highlight": {
+      "type": "string", "enum": ["errors", "ncc", "oom", "none"],
+      "default": "errors",
+      "description": "Filter to lines matching a class of issue. 'errors' = ERROR/Traceback/CUDA_ERROR; 'ncc' = NCCL warnings; 'oom' = OOM/CUDA out of memory."
+    }
+  }
+}
+```
+
+`mode: own` per §18.
+
+### 24.3 The "representative rank" heuristic
+
+When `ranks` is unset (default), surface the most informative ranks:
+
+1. Always rank 0 (the orchestrator).
+2. Any rank whose tail matches the `highlight` regex (default: ERROR class).
+   Iterate ranks ascending; for each NEW error signature seen, add the rank
+   that owns it. Stop at 3 distinct signatures total. ("Max 3" means three
+   signatures, not three ranks — if rank 5 and rank 9 both hit the same OOM
+   message, only rank 5 is added; rank 9 isn't a representative for the same
+   information.)
+3. If nothing matched #2 and the job is running, just rank 0.
+
+**When the caller passes explicit `ranks`**, the heuristic is skipped — the
+explicit list is authoritative. `highlight` still acts as a filter on the
+returned tails (lines that match get flagged; non-matching ranks are still
+returned but with `matched_highlight: false`).
+
+Mark each returned rank with `representative: true` and a short `because:`
+explanation. The LLM uses these to phrase its report. Ranks the caller
+explicitly listed get `representative: false, because: "explicit"`.
+
+### 24.4 Response shape
+
+```json
+{
+  "ok": true,
+  "tool": "job_logs_mpi",
+  "registry_id": 42,
+  "owner": "alice",
+  "total_ranks_detected": 16,
+  "source_format": "per_rank_file",
+  "ranks": [
+    {
+      "rank": 0,
+      "representative": true,
+      "because": "orchestrator",
+      "log_path": "/data/work/rank.0.log",
+      "tail": [ "..." ],
+      "matched_highlight": false
+    },
+    {
+      "rank": 7,
+      "representative": true,
+      "because": "first rank with CUDA out of memory",
+      "log_path": "/data/work/rank.7.log",
+      "tail": [ "..." ],
+      "matched_highlight": true,
+      "highlight_signature": "CUDA out of memory"
+    }
+  ]
+}
+```
+
+**Always include `source_format`** so the LLM knows whether to trust per-rank
+splits or treat output as best-effort inferred.
+
+**Unknown-rank sentinel.** In `unlabeled` mode, lines that don't carry their
+own `rank=N` tag are bucketed under the JSON-string `"unknown"` (NOT an
+integer like `-1`). The entry uses `"rank": "unknown"`. Only emit this bucket
+when the caller asks for it explicitly with `ranks: [-1]`, since unknown-rank
+lines are usually low-signal.
+
+**`highlight_signature` is lowercase.** The regex match is case-insensitive,
+but the signature you store/compare must be normalized to lowercase
+(`"cuda out of memory"`, not `"CUDA out of memory"`). Grouping in §24.3
+step 2 depends on signatures being string-equal — without normalization,
+"CUDA error" and "cuda error" produce two distinct representative ranks for
+the same problem.
+
+### 24.5 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Return all 16 ranks' tails by default                  | 16 × 200 lines × 100 chars = 320KB in one tool result.           |
+| Merge labeled and unlabeled detection in one pass      | Heuristics interfere. Detect format first, then parse.           |
+| Treat `srun` `<rank>:` prefix as the only valid signal | PyTorch DDP and torchrun write per-rank files. Check both.       |
+| Default `highlight: "none"`                            | LLM gets indiscriminate tail. Errors-first is the useful default.|
+| Re-tail the whole file every call                      | For long runs, use `tail -n` not Python `readlines()`.           |
+| Forget `representative` markers                        | LLM can't tell which rank IDs were "picked"; will report all.    |
