@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "audit_anomaly args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window start (unix epoch seconds). Default: now - 24 hours."
+    },
+    "until": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window end (unix epoch seconds). Default: now."
+    },
+    "heuristics": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["cancel_churn", "submit_flood", "stale_pending"] },
+      "default": ["cancel_churn", "submit_flood", "stale_pending"],
+      "description": "Which heuristics to run. Closed set — see §29.5."
+    },
+    "actor": {
+      "type": "string",
+      "description": "Restrict to one actor. Default: all actors (this is an ops tool — §29.5)."
+    },
+    "submit_flood_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 50,
+      "description": "submit_flood: flag if one actor exceeds this many submits within 60 minutes."
+    },
+    "submit_age_min_sec": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1800,
+      "description": "stale_pending: minimum age (seconds before `until`) a submit must have before being flagged stale. Prevents brand-new submits from appearing as stale."
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "audit_summary args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window start (unix epoch seconds). Default: now - 7 days."
+    },
+    "until": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window end (unix epoch seconds). Default: now."
+    },
+    "actor": {
+      "type": "string",
+      "description": "Filter to one actor (OS user). Default: caller ($USER). Identity itself is from environment (§18.1); this is a query knob."
+    },
+    "group_by": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["actor", "action", "tool", "day"] },
+      "default": ["action"],
+      "description": "Aggregation dimensions. Empty list = total only. Multiple dimensions produce composite keys."
+    }
+  }
+}

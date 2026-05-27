@@ -1,0 +1,69 @@
+name: audit_trail
+version: 1.0.0
+summary: Full chronological history of one target (job / webhook / template) — oldest-first.
+description: |
+  **Isolation mode: read-all (§18.2 / §29.1).** Returns every §25 audit
+  row that touches the given `target_id`, regardless of actor. This is
+  an observability tool — it never writes audit rows itself.
+
+  The "reconstruct the job's life" tool. Given a `target_id` (a job
+  registry id, a webhook id, a template name, ...), returns the full
+  timeline of audit events touching it, **oldest first** — read it
+  like a story.
+
+  # When to call this
+  - "what happened to job 42?"
+  - "walk me through the lifecycle of this submission"
+  - "did anyone cancel this webhook ack?"
+
+  # When NOT to call
+  - aggregated counts → `audit_summary`
+  - who did action X → `audit_who`
+  - looking for anomalies → `audit_anomaly`
+
+  # Args
+  - `target_id` (REQUIRED) — the domain id, as string (registry id,
+    webhook id, template name, ...).
+  - `target_kind` (optional) — narrow to one kind when the same id
+    space crosses kinds. Without it, all matching rows are returned
+    and the response surfaces `target_kind_seen` so the LLM can spot
+    cross-kind ambiguity.
+  - `limit` — default 100, max 500.
+
+  # Returns (oldest-first — it's a timeline)
+  ```json
+  {
+    "ok": true,
+    "tool": "audit_trail",
+    "target_id": "42",
+    "target_kind_seen": ["job"],
+    "count": 5,
+    "events": [
+      {"id": 17, "occurred_at": 1716500000, "actor": "alice", "tool": "submit_lsdyna_job@1.1.0",   "action": "submit",        "summary": "..."},
+      {"id": 19, "occurred_at": 1716500180, "actor": "alice", "tool": "job_status@1.0.0",          "action": "inspect",       "summary": "..."},
+      {"id": 24, "occurred_at": 1716503400, "actor": "alice", "tool": "job_postprocess@1.1.0",     "action": "pipeline_step", "summary": "..."}
+    ]
+  }
+  ```
+
+  Empty target (no audit history) is **not** a failure — returns
+  `count: 0, events: []`. A job submitted before §25 wiring legitimately
+  has no audit rows.
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` set (always true under sshd / login shells).
+  - Audit DB at `/data/SmartTwinMCP/audit.db` may not exist yet on a
+    fresh box — same forgiving "not initialized" path as
+    `list_audit_events`.
+tags: [audit, history, timeline, mode-read-all]
+aliases: [audit_history_of]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: full timeline of job 42
+    args: {target_id: "42"}
+  - title: webhook 'wh-7' history, capped
+    args: {target_id: "wh-7", target_kind: webhook, limit: 50}

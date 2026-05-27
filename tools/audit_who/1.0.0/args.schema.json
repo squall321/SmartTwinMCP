@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "audit_who args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle", "pipeline_step"],
+      "description": "§25.2 action vocabulary. REQUIRED — `audit_who {}` is an aimless dump (§29.6 anti-pattern), so the caller must name what they're looking for."
+    },
+    "target_id": {
+      "type": "string",
+      "description": "Narrow to one target (e.g. registry job id, webhook id)."
+    },
+    "since": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window start (unix epoch seconds). Default: now - 7 days."
+    },
+    "until": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Window end (unix epoch seconds). Default: now."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 50,
+      "description": "Cap on rows returned, newest-first."
+    }
+  }
+}

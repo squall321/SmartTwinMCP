@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "audit_trail args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target_id"],
+  "properties": {
+    "target_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The audit row target — typically a registry_id, webhook_id, slurm_job_id, or template name. Stored as string for portability."
+    },
+    "target_kind": {
+      "type": "string",
+      "description": "Optional filter (e.g. 'job', 'webhook', 'template'). Useful when the same id space crosses kinds."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 100,
+      "description": "Cap on rows returned (still oldest-first within the window)."
+    }
+  }
+}

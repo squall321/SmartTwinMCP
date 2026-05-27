@@ -1,0 +1,67 @@
+name: audit_who
+version: 1.0.0
+summary: Who performed action X (optionally on target Y), and when. The "fire alarm" tool.
+description: |
+  **Isolation mode: read-all (§18.2 / §29.1).** Returns audit rows for
+  a specific action across all actors. Caller's identity is still
+  `$USER` from the environment — the LLM cannot impersonate. This is
+  the tool you reach for after noticing an unwanted state change.
+
+  Answers "who did action X to target Y, when". Newest-first ordering,
+  `actor` field is prominent in each row.
+
+  # When to call this
+  - "who cancelled job 42?"
+  - "who applied the gpu_train template this week?"
+  - "which user acknowledged that pending webhook?"
+
+  # When NOT to call
+  - aggregated counts → `audit_summary`
+  - one job's full lifecycle → `audit_trail`
+  - looking for anomalies → `audit_anomaly`
+
+  # Args
+  - `action` (REQUIRED) — one of the §25.2 vocab values. Calling
+    `audit_who {}` without an action is rejected at schema-validation
+    time (§29.6 anti-pattern: forces the caller to ask a specific
+    question instead of an aimless dump).
+  - `target_id` (optional) — narrow to one target.
+  - `since` — default now - 7 days.
+  - `until` — default now.
+  - `limit` — default 50, max 200.
+
+  # Returns (newest-first)
+  ```json
+  {
+    "ok": true,
+    "tool": "audit_who",
+    "action": "cancel",
+    "target_id": "42",
+    "period": {"since": 1716000000, "until": 1716604800},
+    "count": 2,
+    "events": [
+      {"id": 102, "occurred_at": 1716_590_000, "actor": "bob",   "tool": "job_stop@1.0.0",            "action": "cancel", "target_kind": "job", "target_id": "42", "summary": "..."},
+      {"id": 81,  "occurred_at": 1716_588_500, "actor": "alice", "tool": "batch_cancel_jobs@1.0.0",   "action": "cancel", "target_kind": "job", "target_id": "42", "summary": "..."}
+    ]
+  }
+  ```
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` set (always true under sshd / login shells).
+  - Audit DB at `/data/SmartTwinMCP/audit.db` may not exist yet on a
+    fresh box — same forgiving "not initialized" path as the other
+    §29 tools.
+tags: [audit, history, query, mode-read-all]
+aliases: [audit_who_did]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: who cancelled anything in the last 7 days
+    args: {action: cancel}
+  - title: who cancelled job 42 specifically
+    args: {action: cancel, target_id: "42"}
+  - title: who applied templates over a specific window
+    args: {action: template_apply, since: 1716000000, until: 1716604800, limit: 100}

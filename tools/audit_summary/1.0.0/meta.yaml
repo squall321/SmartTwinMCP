@@ -1,0 +1,80 @@
+name: audit_summary
+version: 1.0.0
+summary: Aggregate the §25 audit log over a time window — counts grouped by actor / action / tool / day.
+description: |
+  **Isolation mode: read-all (§18.2 / §29.1).** Counts events across all
+  actors by default (this is an observability tool — caller's identity
+  is still `$USER`, but the query window is cross-user). The `actor`
+  filter defaults to the caller (`$USER`) so a vanilla call answers
+  "what did *I* do this week"; pass `actor` explicitly to widen.
+
+  The "what did we do this week" tool. Reads the §25 audit log and
+  returns counts grouped by the requested dimensions. Sorted by count
+  descending so the LLM names the busy stuff first.
+
+  # When to call this
+  - "what did I submit this week"
+  - "give me a breakdown of cancellations by user"
+  - "which tools are being called the most"
+
+  # When NOT to call
+  - one job's history → use `audit_trail`
+  - who did action X → use `audit_who`
+  - looking for anomalies → use `audit_anomaly`
+  - the raw event list → use `list_audit_events`
+
+  # Defaults
+  - `since` = now - 7 days (audit DB grows unbounded — §29.6 anti-pattern
+    bans "all time" default)
+  - `until` = now
+  - `actor` = `$USER` (caller's own activity; explicit override widens it)
+  - `group_by` = `["action"]`
+
+  # Group dimensions
+  - `actor` — OS user
+  - `action` — §25.2 vocab (submit / cancel / inspect / ...)
+  - `tool`   — qualified tool name (e.g. `submit_lsdyna_job@1.0.0`)
+  - `day`    — UTC date (`YYYY-MM-DD`) derived from `occurred_at`
+
+  Multi-dimension `group_by` produces composite `key` objects:
+  `{"actor": "alice", "tool": "submit_lsdyna_job@1.0.0"}`.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "audit_summary",
+    "period": {"since": 1716000000, "until": 1716604800},
+    "actor": "alice",
+    "group_by": ["action"],
+    "total_events": 187,
+    "groups": [
+      {"key": {"action": "inspect"}, "count": 98},
+      {"key": {"action": "submit"},  "count": 42},
+      {"key": {"action": "pipeline_step"}, "count": 31},
+      {"key": {"action": "cancel"},  "count": 16}
+    ]
+  }
+  ```
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` set (always true under sshd / login shells).
+  - Audit DB at `/data/SmartTwinMCP/audit.db` may not exist yet on a
+    fresh box. In that case returns `ok: true, total_events: 0,
+    groups: []` (mirrors `list_audit_events` forgiving behavior).
+tags: [audit, history, summary, analytics, mode-read-all]
+aliases: [audit_aggregate]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 10
+expose: catalog
+examples:
+  - title: my activity in the last 7 days, grouped by action (defaults)
+    args: {}
+  - title: my events grouped by tool
+    args: {group_by: [tool]}
+  - title: alice's activity over a specific window, by day
+    args: {actor: alice, since: 1716000000, until: 1716604800, group_by: [day]}
+  - title: my events grouped by tool AND action (composite keys)
+    args: {group_by: [tool, action]}

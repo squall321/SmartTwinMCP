@@ -1,0 +1,90 @@
+name: audit_anomaly
+version: 1.0.0
+summary: Run 3 closed-set heuristics over the recent §25 audit log and flag suspicious patterns.
+description: |
+  **Isolation mode: read-all (§18.2 / §29.1).** Defaults to cross-actor
+  ops view — this is the "should I look at anything" tool. Caller's
+  identity is still `$USER` from the environment.
+
+  Runs the 3 v1 heuristics from §29.5 over the recent audit log:
+
+  1. **`cancel_churn`** — same `target_id` cancelled ≥ 2 times within
+     any 10-minute window. Suggests a misconfigured loop.
+  2. **`submit_flood`** — one actor submitted > 50 events within any
+     60-minute window. Tunable baseline; baked at 50/hour in v1.
+     Severity downgrades to `low` when ≥ 80% of the events were
+     `dry_run` (informational, no compute landed).
+  3. **`stale_pending`** — a target with a `submit` event but no
+     `inspect` / `pipeline_step` / `cancel` since (now - 24h).
+     Suggests an abandoned submission.
+
+  **Closed list** — adding a heuristic is a guide-level change (§29.6).
+
+  # When to call this
+  - "anyone trying anything weird in the last day?"
+  - "ops dashboard — flag suspicious patterns"
+
+  # When NOT to call
+  - aggregated counts → `audit_summary`
+  - one job's lifecycle → `audit_trail`
+  - who did action X → `audit_who`
+
+  # Args
+  - `since` — default now - 24 hours.
+  - `until` — default now.
+  - `heuristics` — default all three.
+  - `actor` — default all actors (ops tool; do not narrow unless the
+    caller asked for it).
+
+  # Severity vocabulary (§29.5 — closed)
+  - `low` — informational, likely harmless (used by `submit_flood` when
+    ≥ 80% of events have `detail.dry_run == true`).
+  - `medium` — worth a human glance. Default for matches in v1.
+  - `high` — reserved for future heuristics with strong false-positive
+    resistance. **No v1 heuristic emits `high`.**
+
+  No `critical` — that's a §29.6 anti-pattern.
+
+  # Returns
+  ```json
+  {
+    "ok": true,
+    "tool": "audit_anomaly",
+    "period": {"since": 1716000000, "until": 1716086400},
+    "heuristics_run": ["cancel_churn", "submit_flood", "stale_pending"],
+    "findings": [
+      {
+        "heuristic": "cancel_churn",
+        "severity": "medium",
+        "actor": "alice",
+        "target_id": "42",
+        "summary": "job 42 cancelled 3 times in 6 min",
+        "supporting_events": [17, 19, 24]
+      }
+    ],
+    "count": 1
+  }
+  ```
+
+  Every finding carries a `supporting_events: [row_id, ...]` array
+  pointing back at the audit row ids, so the LLM can cross-reference
+  to `audit_trail` for the full picture.
+
+  # Pre-conditions
+  - `$USER` or `$LOGNAME` set (always true under sshd / login shells).
+  - Audit DB at `/data/SmartTwinMCP/audit.db` may not exist yet on a
+    fresh box — `count: 0, findings: []`.
+tags: [audit, anomaly, ops, analytics, mode-read-all]
+aliases: [audit_check]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 15
+expose: catalog
+examples:
+  - title: run all 3 heuristics over the last 24h (defaults)
+    args: {}
+  - title: just cancel_churn over a custom window
+    args: {since: 1716000000, until: 1716086400, heuristics: [cancel_churn]}
+  - title: scope to one actor (asked-for narrowing)
+    args: {actor: alice}

@@ -3317,3 +3317,238 @@ LLM can explain "4 × 211200 = 844800" without inventing intermediate numbers.
 | Audit every `estimate_cost` call                       | It's a calculator. §25.3 says no audit on observability tools.   |
 | `summarize_costs` over all users by default            | mode: own. Cross-user roll-ups need explicit `actor` filter.     |
 | Skip `caveat` in the response                          | Estimate-vs-actual surprises users. Always include disclaimer.   |
+
+---
+
+## 29. Audit-derived analytics
+
+§25 made the audit log a real data source. §29 tools READ that log to answer
+the questions sessions are actually about: "what happened on this job", "what
+did alice do this week", "anyone trying anything weird".
+
+All four tools in this section are **`mode-read-all`** observability — they
+never mutate, and they query across users by design (with caller-name as the
+default filter for the privacy-sensitive ones).
+
+### 29.1 The four standard tools
+
+- `audit_summary` — period aggregate. Counts grouped by `actor` / `action` /
+  `tool` over a time window. The "what did we do this week" tool.
+- `audit_trail` — full chronological history of one target. Given a
+  `target_id`, returns every audit row touching it, oldest first. The
+  "reconstruct the job's life" tool.
+- `audit_who` — answers "who did action X to target Y, when". The "fire
+  alarm" tool — used after an unwanted state change appears.
+- `audit_anomaly` — runs simple heuristics over the recent audit log,
+  flags suspicious patterns. The "should I look at anything" tool.
+
+None of these write audit rows themselves (they're observability per §25.3).
+
+### 29.2 `audit_summary` shape
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "since": { "type": "integer", "description": "unix epoch; default = 7 days ago" },
+    "until": { "type": "integer", "description": "unix epoch; default = now" },
+    "actor": { "type": "string", "description": "Filter to one actor. Default: caller ($USER)." },
+    "group_by": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["actor", "action", "tool", "day"] },
+      "default": ["action"],
+      "description": "Aggregation dimensions. Empty = total only."
+    }
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "tool": "audit_summary",
+  "period": {"since": 1716000000, "until": 1716604800},
+  "total_events": 187,
+  "groups": [
+    {"key": {"action": "submit"}, "count": 42},
+    {"key": {"action": "inspect"}, "count": 98},
+    {"key": {"action": "pipeline_step"}, "count": 31},
+    {"key": {"action": "cancel"}, "count": 16}
+  ]
+}
+```
+
+Multi-dimension `group_by` produces composite `key` objects. **Sort by
+count descending** so the LLM names the busy stuff first.
+
+**`group_by: []` (empty)** — no grouping; return just the total count with
+`groups: []` empty:
+
+```json
+{
+  "ok": true,
+  "tool": "audit_summary",
+  "period": {"since": 1716000000, "until": 1716604800},
+  "total_events": 187,
+  "groups": []
+}
+```
+
+### 29.3 `audit_trail` shape
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target_id"],
+  "properties": {
+    "target_id": { "type": "string", "description": "The audit row target (registry_id, webhook_id, ...)." },
+    "target_kind": { "type": "string", "description": "Optional filter — useful when the same id space crosses kinds." },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
+  }
+}
+```
+
+Response is the row list **oldest first** (read it like a timeline):
+
+```json
+{
+  "ok": true,
+  "tool": "audit_trail",
+  "target_id": "42",
+  "target_kind_seen": ["job"],
+  "count": 5,
+  "events": [
+    {"id": 17, "occurred_at": 1716_500_000, "actor": "alice", "tool": "submit_lsdyna_job@1.1.0",   "action": "submit",        "summary": "..."},
+    {"id": 19, "occurred_at": 1716_500_180, "actor": "alice", "tool": "job_status@1.0.0",          "action": "inspect",       "summary": "..."},
+    {"id": 24, "occurred_at": 1716_503_400, "actor": "alice", "tool": "job_postprocess@1.1.0",     "action": "pipeline_step", "summary": "..."},
+    ...
+  ]
+}
+```
+
+Empty target → `count: 0, events: []`. No hard fail (a job may simply have
+no audit history if it was submitted before §25 wiring).
+
+### 29.4 `audit_who` shape
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action"],
+  "properties": {
+    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle", "pipeline_step"] },
+    "target_id": { "type": "string", "description": "Narrow to one target." },
+    "since": { "type": "integer" },
+    "until": { "type": "integer" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+  }
+}
+```
+
+Response is the matching rows newest-first with the `actor` field prominent
+in each row. **Action is required** — `audit_who {}` would be an aimless
+dump; force the caller to name what they're looking for.
+
+### 29.5 `audit_anomaly` heuristics
+
+This is the only §29 tool that does interpretation, so it needs explicit
+rules — otherwise different implementations will flag different things.
+
+**Three heuristics for v1. Don't add more without a guide change.**
+
+1. **`cancel_churn`** — same `target_id` cancelled then submitted again, then
+   cancelled again, all within 10 minutes. Suggests a misconfigured loop.
+   Threshold: ≥ 2 cancel events on the same target within a 10-min window.
+2. **`submit_flood`** — one actor submitted > `submit_flood_threshold` jobs
+   within 60 minutes. Threshold exposed as an arg; default 50.
+3. **`stale_pending`** — a job has `submit` in audit but no `inspect` /
+   `pipeline_step` / `cancel` in the past 24 hours, AND the submit happened
+   at least `submit_age_min_sec` seconds before `until` (default 1800 = 30 min).
+   The age gate prevents brand-new submits from showing up as stale.
+
+Args:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "since": { "type": "integer", "description": "Window start. Default: 24 hours ago." },
+    "until": { "type": "integer", "description": "Window end. Default: now." },
+    "heuristics": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["cancel_churn", "submit_flood", "stale_pending"] },
+      "default": ["cancel_churn", "submit_flood", "stale_pending"]
+    },
+    "actor": { "type": "string", "description": "Restrict to one actor. Default: all actors (this is an ops tool)." },
+    "submit_flood_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 50,
+      "description": "submit_flood: flag if one actor exceeds this many submits in 60 min."
+    },
+    "submit_age_min_sec": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1800,
+      "description": "stale_pending: a submit must be at least this old (seconds before `until`) before it can be flagged as stale. Prevents brand-new submits from appearing stale."
+    }
+  }
+}
+```
+
+**Multi-actor `cancel_churn` finding**: When more than one actor cancelled
+the same target within the window (e.g. a user cancelled and an admin also
+cancelled), the `actor` field is `null` and the full list of actors is given
+in `actors`. Single-actor case: `actor` = that actor's string, `actors`
+omitted.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "tool": "audit_anomaly",
+  "period": {"since": 1716000000, "until": 1716086400},
+  "heuristics_run": ["cancel_churn", "submit_flood", "stale_pending"],
+  "findings": [
+    {
+      "heuristic": "cancel_churn",
+      "severity": "medium",
+      "actor": null,
+      "actors": ["alice", "admin"],
+      "target_id": "42",
+      "summary": "target 42 cancelled 3 times in 6 min",
+      "supporting_events": [17, 19, 24]
+    },
+    ...
+  ],
+  "count": 1
+}
+```
+
+Every finding includes a `supporting_events` array of audit row ids so the
+LLM can cross-reference to `audit_trail`.
+
+**`severity` vocabulary** (don't invent more):
+
+- `low` — informational, likely harmless (e.g. `submit_flood` of dry_runs).
+- `medium` — worth a human glance (default for most matches).
+- `high` — reserved for future heuristics with strong false-positive
+  resistance (none in v1).
+
+### 29.6 Anti-patterns
+
+| Don't                                                  | Why                                                              |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| Have `audit_summary` write audit rows                  | Observability never mutates (§25.3). Same applies to all §29.    |
+| `audit_who {}` with no `action`                        | Schema rejects. Forces the caller to ask a specific question.    |
+| Add heuristics to `audit_anomaly` ad-hoc               | List is closed at 3 for v1. New ones are guide-level changes.    |
+| Use `audit_anomaly` `severity: critical`               | Reserved/unused. The 3-tier set above is the closed vocabulary.  |
+| Default `audit_summary` `since` to "all time"          | Audit DB grows unbounded. 7-day default keeps responses bounded. |
+| Sort `audit_trail` newest-first                        | It's a timeline — oldest-first reads like a story.               |
