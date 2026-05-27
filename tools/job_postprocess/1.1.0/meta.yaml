@@ -1,0 +1,28 @@
+name: job_postprocess
+version: 1.1.0
+summary: KooD3plotReader 후처리 수동 실행 (KooChainRun postprocess).
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  레지스트리에서 잡 찾아서 KooChainRun postprocess 수동 호출.
+  auto_postprocess가 fail/skip된 경우 또는 enabled=false였던 잡에 후처리 추가하고 싶을 때.
+
+  # mode 옵션
+  - "all" (default): deep + sphere 둘 다
+  - "deep": 각 Run_*/deep_report.sh만
+  - "sphere": 통합 sphere_report.sh만
+
+  # 결과
+  - deep: 각 Run_*/Output/report/ (HTML + JSON + renders)
+  - sphere: output_dir/sphere_report.html (Mollweide projection)
+
+  단순 .k 잡(submit_lsdyna_job)은 지원 X.
+tags: [postprocess, koo_d3plot, sphere_report, deep_report, mode-own]
+aliases: [postprocess, run_postprocess, redo_post]
+transport: {kind: local, shell: /bin/bash, timeout_sec: 7200}
+expose: direct
+examples:
+  - title: 전체 후처리 재실행
+    args: {registry_id: 42, mode: all}
+  - title: sphere만 (deep은 이미 완료)
+    args: {registry_id: 42, mode: sphere}

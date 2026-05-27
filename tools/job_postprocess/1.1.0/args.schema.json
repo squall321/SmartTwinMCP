@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [{"required": ["registry_id"]}, {"required": ["work_dir"]}],
+  "properties": {
+    "registry_id": {"type": "integer", "minimum": 1, "description": "DB primary key from the registry (preferred lookup)."},
+    "work_dir": {"type": "string", "pattern": "^/.+", "description": "Absolute path to the job's work directory (fallback if registry_id unknown)."},
+    "mode": {
+      "type": "string",
+      "enum": ["all", "deep", "sphere"],
+      "default": "all",
+      "description": "후처리 범위: 'all'=deep+sphere 모두, 'deep'=deep_report만, 'sphere'=sphere_report만. Default 'all'."
+    }
+  }
+}

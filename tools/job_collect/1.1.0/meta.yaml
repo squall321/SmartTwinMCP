@@ -1,0 +1,19 @@
+name: job_collect
+version: 1.1.0
+summary: 시뮬 결과 수집 (KooChainRun collect).
+description: |
+  v1.1.0: writes audit log per §25.3.
+
+  레지스트리에서 잡 찾아서 KooChainRun collect 호출. 모든 Run_*/Output/ 메타데이터 수집해서
+  요약본 (simulation_index.json 등) 생성.
+
+  보통 잡 끝난 후 결과 정리 + 통계 위해 호출.
+tags: [collect, results, summary, mode-own]
+aliases: [collect, gather, summarize]
+transport: {kind: local, shell: /bin/bash, timeout_sec: 300}
+expose: direct
+examples:
+  - title: registry_id
+    args: {registry_id: 42}
+  - title: work_dir fallback (registry_id 모를 때)
+    args: {work_dir: /data/koopark/fullangle_test}
