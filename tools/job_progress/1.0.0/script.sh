@@ -15,6 +15,7 @@ import sys
 import time
 
 sys.path.insert(0, os.environ["SHARED_DIR"])
+import audit
 from job_helpers import resolve_job, fail, KOOCHAINRUN
 
 
@@ -316,6 +317,7 @@ def main():
                 "signal_used": None,
                 "reason": "no usable progress signal (no KooChainRun status, no angle_*/d3plot, no parseable mes0000/d3hsp)",
             })
+        _audit_inspect(caller, job, base.get("signal_used"), base.get("progress_pct"))
         print(json.dumps(base, ensure_ascii=False, default=str))
         return
 
@@ -328,7 +330,28 @@ def main():
         base["eta_sec"] = eta_sec
         base["eta_confidence"] = eta_conf
 
+    _audit_inspect(caller, job, base.get("signal_used"), base.get("progress_pct"))
     print(json.dumps(base, ensure_ascii=False, default=str))
+
+
+def _audit_inspect(caller: str, job: dict, signal_used, progress_pct):
+    """§25.3.3 inspection audit with 5-min session_seen dedup guard."""
+    tool_qn = "job_progress@1.0.0"
+    target_id = str(job["id"])
+    if audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+        return
+    audit.record_event(
+        actor=caller,
+        tool=tool_qn,
+        action="inspect",
+        summary=f"checked progress for job {target_id} (signal={signal_used}, pct={progress_pct})",
+        target_kind="job",
+        target_id=target_id,
+        detail={
+            "signal_used": signal_used,
+            "progress_pct": progress_pct,
+        },
+    )
 
 
 try:

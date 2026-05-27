@@ -15,7 +15,7 @@ description: |
   - sphere: output_dir/sphere_report.html (Mollweide projection)
 
   단순 .k 잡(submit_lsdyna_job)은 지원 X.
-tags: [postprocess, koo_d3plot, sphere_report, deep_report]
+tags: [postprocess, koo_d3plot, sphere_report, deep_report, mode-own]
 aliases: [postprocess, run_postprocess, redo_post]
 transport: {kind: local, shell: /bin/bash, timeout_sec: 7200}
 expose: direct

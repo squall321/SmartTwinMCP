@@ -62,7 +62,7 @@ description: |
     ]
   }
   ```
-tags: [slurm, sinfo, partition, capacity, preflight, observability]
+tags: [slurm, sinfo, partition, capacity, preflight, observability, mode-read-all]
 transport:
   kind: local
   shell: /bin/bash

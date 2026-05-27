@@ -11,7 +11,7 @@ description: |
 
   # 인자: registry_id 또는 work_dir 중 하나
   - id 우선. work_dir 주면 LIKE 매칭 (가장 최근 1개).
-tags: [registry, details, jobs]
+tags: [registry, details, jobs, mode-own]
 aliases: [job_details, get_job, job_info]
 transport:
   kind: local

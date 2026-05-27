@@ -28,7 +28,7 @@ description: |
     "examples": [ ... 자주 쓰는 패턴 ... ]
   }
   ```
-tags: [reference, schema, advanced, scenario, koochainrun, tier2]
+tags: [reference, schema, advanced, scenario, koochainrun, tier2, mode-read-all]
 aliases: [scenario_schema, koochainrun_options, advanced_options]
 transport: {kind: local, shell: /bin/bash, timeout_sec: 5}
 expose: catalog   # 일부러 direct 안 함 — 평소엔 catalog_search로만 발견되게

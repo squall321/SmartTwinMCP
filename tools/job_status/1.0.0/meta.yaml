@@ -7,7 +7,7 @@ description: |
 
   # 인자: registry_id 또는 work_dir
   단순 .k 잡(submit_lsdyna_job)도 squeue 부분은 동작 (KooChainRun status는 skip).
-tags: [status, squeue, jobs, monitor]
+tags: [status, squeue, jobs, monitor, mode-own]
 aliases: [status, squeue, check]
 transport: {kind: local, shell: /bin/bash, timeout_sec: 30}
 expose: direct

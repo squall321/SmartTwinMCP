@@ -76,6 +76,14 @@ FULL_SCHEMA = {
         "timeout_per_step_seconds": {"type": "integer", "default": 604800, "description": "전체 1 step (KooMeshModifier+LS-DYNA+dynain) timeout (sec)."},
         "timeout_koomeshmodifier_seconds": {"type": "integer", "default": 604800},
         "timeout_dynain_seconds": {"type": "integer", "default": 604800},
+        "stage_out_concurrency": {
+            "type": "integer", "default": 8,
+            "_note": "동시 stage-out rsync 개수 cap (semaphore). 작은 클러스터=8, 수십 노드=16~32, 100+ 노드=32~64. NFS 서버 부하 한계에 맞춰 조절."
+        },
+        "stage_out_timeout_seconds": {
+            "type": "integer", "default": 120,
+            "_note": "semaphore 토큰 획득 timeout. 잡 수 많고 stage-out 시간 길면 늘려야 함 (예: 350 노드 + 30초 rsync ≈ 22 batch × 30s = 11분 → 1800~7200 권장)."
+        },
     },
 
     "simulation_params": {

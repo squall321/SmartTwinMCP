@@ -58,7 +58,7 @@ description: |
   { "ok": true, "tool": "job_progress", "registry_id": 42, "owner": "alice",
     "progress_pct": 0, "signal_used": null, "reason": "queued" }
   ```
-tags: [progress, eta, percent, jobs, status, koochainrun, drop, fullangle]
+tags: [progress, eta, percent, jobs, status, koochainrun, drop, fullangle, mode-own]
 aliases: [progress, job_percent, percent_done]
 transport:
   kind: local

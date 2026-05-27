@@ -13,6 +13,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.environ["SHARED_DIR"])
+import audit
 from job_helpers import resolve_job, fail
 
 
@@ -372,6 +373,24 @@ def main():
         if requested is not None and requested != [-1] and not decision["representative"]:
             decision = {**decision, "because": "explicitly requested"}
         rank_entries.append(build_rank_entry(r, tail, decision, source_format, ctx))
+
+    # §25.3.3 inspection audit with 5-min session_seen dedup guard.
+    tool_qn = "job_logs_mpi@1.0.0"
+    target_id = str(job["id"])
+    if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+        audit.record_event(
+            actor=caller,
+            tool=tool_qn,
+            action="inspect",
+            summary=f"inspected MPI logs for job {target_id} ({total_ranks_detected} ranks, format={source_format})",
+            target_kind="job",
+            target_id=target_id,
+            detail={
+                "source_format": source_format,
+                "total_ranks_detected": total_ranks_detected,
+                "highlight": highlight_name,
+            },
+        )
 
     response = {
         "ok": True,

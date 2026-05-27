@@ -5,6 +5,7 @@ python3 - <<'PY'
 import json, os, sys
 sys.path.insert(0, os.environ["SHARED_DIR"])
 import registry
+import audit
 from job_helpers import resolve_job, run_koochainrun, slurm_queue_for, fail
 
 def main():
@@ -25,6 +26,24 @@ def main():
     if rc_path and os.path.exists(rc_path):
         rc, so, se = run_koochainrun("status", rc_path, timeout=30)
         out["koochainrun_status"] = {"rc": rc, "stdout": so[-2000:], "stderr": se[-500:]}
+
+    # §25.3.3 inspection audit with 5-min session_seen dedup guard.
+    caller = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+    tool_qn = "job_status@1.0.0"
+    target_id = str(job["id"])
+    if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+        audit.record_event(
+            actor=caller,
+            tool=tool_qn,
+            action="inspect",
+            summary=f"inspected job {target_id} ({job['tool_name']})",
+            target_kind="job",
+            target_id=target_id,
+            detail={
+                "tool_inspected": job["tool_name"],
+                "slurm_job_ids": slurm_ids,
+            },
+        )
 
     print(json.dumps(out, ensure_ascii=False, default=str))
 

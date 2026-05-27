@@ -9,6 +9,7 @@ import json, os, sys, datetime, glob
 
 sys.path.insert(0, os.environ["SHARED_DIR"])
 import registry
+import audit
 
 
 def fail(reason):
@@ -61,6 +62,24 @@ def main():
         job["submitted_at_human"] = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
     job["disk_state"] = disk_state(job)
+
+    # §25.3.3 inspection audit with 5-min session_seen dedup guard.
+    caller = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+    tool_qn = "get_job_details@1.0.0"
+    target_id = str(job["id"])
+    if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+        audit.record_event(
+            actor=caller,
+            tool=tool_qn,
+            action="inspect",
+            summary=f"fetched details for job {target_id} ({job.get('tool_name')})",
+            target_kind="job",
+            target_id=target_id,
+            detail={
+                "tool_inspected": job.get("tool_name"),
+                "status_seen": job.get("status"),
+            },
+        )
 
     print(json.dumps({"ok": True, "job": job}, ensure_ascii=False, default=str))
 

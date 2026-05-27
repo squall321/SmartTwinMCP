@@ -6,7 +6,7 @@ description: |
   요약본 (simulation_index.json 등) 생성.
 
   보통 잡 끝난 후 결과 정리 + 통계 위해 호출.
-tags: [collect, results, summary]
+tags: [collect, results, summary, mode-own]
 aliases: [collect, gather, summarize]
 transport: {kind: local, shell: /bin/bash, timeout_sec: 300}
 expose: direct

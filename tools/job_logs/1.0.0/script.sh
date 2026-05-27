@@ -8,6 +8,7 @@ python3 - <<'PY'
 import json, os, sys
 
 sys.path.insert(0, os.environ["SHARED_DIR"])
+import audit
 from job_helpers import resolve_job, fail
 
 
@@ -43,6 +44,25 @@ def main():
 
     out_exists, out_tail = tail_file(stdout_path, n)
     err_exists, err_tail = tail_file(stderr_path, n)
+
+    # §25.3.3 inspection audit with 5-min session_seen dedup guard.
+    caller = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+    tool_qn = "job_logs@1.0.0"
+    target_id = str(job["id"])
+    if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+        audit.record_event(
+            actor=caller,
+            tool=tool_qn,
+            action="inspect",
+            summary=f"tailed logs for job {target_id} ({n} lines)",
+            target_kind="job",
+            target_id=target_id,
+            detail={
+                "lines": n,
+                "stdout_exists": out_exists,
+                "stderr_exists": err_exists,
+            },
+        )
 
     print(json.dumps({
         "ok": True,

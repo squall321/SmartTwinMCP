@@ -5,7 +5,7 @@ description: |
   A trivial diagnostic tool. Use it to confirm the MCP server can find, validate,
   and execute tools end-to-end. The script reads args from $STMC_ARGS_JSON and
   prints a JSON envelope.
-tags: [diagnostic, smoke-test]
+tags: [diagnostic, smoke-test, mode-read-all]
 transport:
   kind: local
   shell: /bin/bash

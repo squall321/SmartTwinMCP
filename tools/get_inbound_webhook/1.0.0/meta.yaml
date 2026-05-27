@@ -51,7 +51,7 @@ description: |
   The DB path is `/data/SmartTwinMCP/inbound_webhooks.db`. The env var
   `STMC_WEBHOOK_DB`, if set, overrides this path — this is a TEST OVERRIDE used by
   the §7 verification script. **Production callers should NOT set `STMC_WEBHOOK_DB`.**
-tags: [webhook, inbound, sidecar, sqlite, queue]
+tags: [webhook, inbound, sidecar, sqlite, queue, mode-read-all]
 transport:
   kind: local
   shell: /bin/bash

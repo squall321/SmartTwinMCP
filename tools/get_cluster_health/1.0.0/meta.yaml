@@ -37,7 +37,7 @@ description: |
   ```
   On a non-2xx response or transport error, `ok` is `false` and the response
   body (if any) is in `stdout` while the error message is in `stderr`.
-tags: [http, cluster, health, monitoring, smarttwincluster, preflight]
+tags: [http, cluster, health, monitoring, smarttwincluster, preflight, mode-read-all]
 transport:
   kind: http
   method: GET

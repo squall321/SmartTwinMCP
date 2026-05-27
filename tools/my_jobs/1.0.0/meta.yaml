@@ -48,7 +48,7 @@ description: |
     ]
   }
   ```
-tags: [registry, jobs, multi-tenant, own, query]
+tags: [registry, jobs, multi-tenant, own, query, mode-own]
 transport:
   kind: local
   shell: /bin/bash

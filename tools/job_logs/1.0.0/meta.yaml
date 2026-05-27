@@ -41,7 +41,7 @@ description: |
     "lines": 50
   }
   ```
-tags: [logs, tail, slurm, jobs, debug, stdout, stderr]
+tags: [logs, tail, slurm, jobs, debug, stdout, stderr, mode-own]
 aliases: [logs, tail_logs, slurm_logs]
 transport:
   kind: local
