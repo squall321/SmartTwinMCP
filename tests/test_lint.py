@@ -232,6 +232,40 @@ def test_L070_mutation_tool_missing_audit_call():
         assert len(warns) == 1, [f.format() for f in report.findings]
 
 
+def test_L051_no_mode_tag_at_all_flagged():
+    """Even non-mutation tools must declare a mode-* tag."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # A read-shaped tool with NO mode-* tag at all.
+        d = root / "look_at_thing" / "1.0.0"
+        d.mkdir(parents=True)
+        (d / "args.schema.json").write_text(json.dumps({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object", "additionalProperties": False, "properties": {},
+        }))
+        (d / "meta.yaml").write_text("\n".join([
+            "name: look_at_thing",
+            "version: 1.0.0",
+            "summary: smoke",
+            "tags: [read, query]",  # no mode-*
+            "transport: {kind: local, shell: /bin/bash, timeout_sec: 5}",
+            "expose: catalog",
+            "examples:",
+            "  - title: a",
+            "    args: {}",
+        ]) + "\n")
+        sh = d / "script.sh"
+        sh.write_text('#!/bin/bash\necho \'{"ok": true}\'\n')
+        sh.chmod(0o755)
+        (root / "look_at_thing" / "latest").symlink_to("1.0.0")
+
+        report = lint(root)
+        l051 = [f for f in report.findings if f.rule_id == "L051"]
+        assert len(l051) == 1, [f.format() for f in report.findings]
+        # L050 should NOT also fire — this is a read-shaped tool name.
+        assert not [f for f in report.findings if f.rule_id == "L050"]
+
+
 def test_L070_read_all_tool_not_flagged():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

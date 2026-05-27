@@ -26,7 +26,7 @@
     },
     "action": {
       "type": "string",
-      "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle"],
+      "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle", "pipeline_step"],
       "description": "Filter by §25.2 action vocabulary."
     },
     "target_id": {

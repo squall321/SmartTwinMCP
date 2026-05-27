@@ -290,6 +290,25 @@ def rule_L050_mode_tag(_catalog, entries) -> Iterable[Finding]:
             )
 
 
+def rule_L051_any_mode_tag(_catalog, entries) -> Iterable[Finding]:
+    """L051 — EVERY tool (mutation or not) must declare exactly one mode tag.
+
+    L050 catches missing tags on tools the heuristic flags as mutations, but
+    a tool with neither a `dry_run` arg nor a mutation-style name (e.g.
+    `job_collect`, `job_diagnose`) silently sails through L050 even when
+    it does call run_koochainrun or write to disk. L051 forces every author
+    to make an explicit classification — read-all vs own vs own-shared —
+    so review can spot misclassifications instead of missing data."""
+    for entry in entries:
+        if not _has_mode_tag(entry):
+            yield Finding(
+                "warning", "L051", entry.qualified_name,
+                "no `mode-*` tag at all (§18.2) — every tool must declare "
+                "one of `mode-own`, `mode-own-shared`, or `mode-read-all`",
+                entry.spec_dir / "meta.yaml",
+            )
+
+
 def rule_L060_no_hardcoded_endpoint(_catalog, entries) -> Iterable[Finding]:
     """L060 — http/ssh transports must use ${VAR} interpolation, not raw
     hostnames/URLs/secrets (§15.3, §22.3)."""
@@ -361,6 +380,7 @@ ALL_RULES: list[tuple[str, Callable]] = [
     ("L031", rule_L031_examples_validate),
     ("L040", rule_L040_expose_value),
     ("L050", rule_L050_mode_tag),
+    ("L051", rule_L051_any_mode_tag),
     ("L060", rule_L060_no_hardcoded_endpoint),
     ("L070", rule_L070_audit_wire),
 ]

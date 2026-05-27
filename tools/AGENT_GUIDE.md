@@ -2685,7 +2685,8 @@ Path: `/data/SmartTwinMCP/audit.db`. Test override: `STMC_AUDIT_DB`
 
 Limited vocabulary — keep it grep-able:
 
-- `submit` — created a new job (any submit_* tool)
+- `submit` — created a NEW job (any submit_* tool). Use only for the
+  initial job submission — not for follow-up steps on an existing job.
 - `cancel` — cancelled one or more jobs
 - `inspect` — read a job's status/logs/progress for the first time in this session
 - `acknowledge` — ack'd a webhook
@@ -2693,6 +2694,10 @@ Limited vocabulary — keep it grep-able:
 - `cost_estimate` — generated a §28 estimate
 - `config_toggle` — flipped a config flag (e.g. §27 `enable_scheduled_job`).
   Use this when the mutation is metadata-only, no compute job involved.
+- `pipeline_step` — ran a downstream step on an EXISTING job (e.g.
+  `job_collect`, `job_postprocess`, future `job_render`). Distinct from
+  `submit` so audit queries can separate "a new job appeared" from "more
+  work happened on a job that already existed".
 
 **Don't** invent new actions ad-hoc. Adding one is a guide-level change.
 
@@ -2742,6 +2747,14 @@ audit.record_event(
 
 **Failure path stays silent.** Don't audit on `fail()` — the user already
 sees the failure response. Auditing failures pollutes the table with noise.
+
+**Multiple success exits.** Some tools have several `print(...) + return`
+points on the success path (e.g. `job_progress` returns early when no
+signal is available, normal return when a percent is computed). Wrap the
+audit call in a `_audit_inspect(...)` (or `_audit_submit(...)`) local
+helper and call it right before each terminal print on the success path.
+The helper body must still contain a literal `record_event(` call so the
+L070 static grep finds it.
 
 **Adding audit to a tool that didn't import `_shared/` before.** Some
 tools (especially zero-arg or webhook tools) historically had no
@@ -2814,6 +2827,52 @@ The schema must match §25.1 EXACTLY. The DDL above is the schema verbatim.
 **Don't drift** — a remote-inlined schema that diverges silently breaks
 local queries.
 
+### 25.3.3 Inspection tools — `session_seen` dedup
+
+The third bullet of §25.3 says inspection tools (job_status / job_logs /
+job_logs_mpi / job_progress / get_job_details / job_diagnose) MAY write
+audit rows, but the 5-minute dedup heuristic prevents flooding. The
+recipe uses `audit.session_seen` to guard the call:
+
+```python
+import audit  # _shared/
+
+caller = os.environ.get("USER") or "unknown"
+tool_qn = "job_status@1.0.0"
+target_id = str(job["id"])      # the resolved registry row
+
+if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
+    audit.record_event(
+        actor=caller,
+        tool=tool_qn,
+        action="inspect",
+        summary=f"inspected job {target_id} ({job['tool_name']}, status={job['status']})",
+        target_kind="job",
+        target_id=target_id,
+        detail={                          # 2-3 fields max — inspection isn't a state change
+            "tool_inspected": job["tool_name"],
+            "status_seen": job["status"],
+        },
+    )
+```
+
+The L070 lint rule treats `record_event(` inside an `if not session_seen(...)`
+guard the same as an unconditional call — the static grep only checks for
+the function name. **Don't drop the `session_seen` guard** thinking lint
+will still pass; without it, repeated inspections of the same job in one
+LLM turn fill the audit table with `inspect` noise.
+
+**`action: "inspect"` is the only valid action for this recipe.** Don't
+piggyback `submit`/`cancel` semantics onto a read tool.
+
+**No version bump when adding inspection audit.** Unlike mutation audit
+(which is a behavioral change visible via §25.6 query of past sessions),
+inspection audit is a non-breaking observability addition — same response
+shape, same args. Edit the existing `<version>/script.sh` in place; keep
+the qualified name (e.g. `job_status@1.0.0`) in `record_event`'s `tool`
+field. Bumping inspection tools to 1.1.0 just to add audit creates
+needless catalog churn.
+
 ### 25.4 Required helper — `_shared/audit.py`
 
 Add this module (it does not exist yet) so every audit-writing tool calls
@@ -2860,7 +2919,7 @@ Add `list_audit_events` at the same time as the helper:
     "since": { "type": "integer", "description": "unix epoch; events where occurred_at >= since" },
     "actor": { "type": "string", "description": "Filter by OS user. Default: caller ($USER)." },
     "tool": { "type": "string", "description": "Filter by qualified tool name." },
-    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle"] },
+    "action": { "type": "string", "enum": ["submit", "cancel", "inspect", "acknowledge", "template_apply", "cost_estimate", "config_toggle", "pipeline_step"] },
     "target_id": { "type": "string" }
   }
 }
