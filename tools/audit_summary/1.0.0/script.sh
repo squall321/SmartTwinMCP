@@ -52,37 +52,41 @@ def main():
     raw = audit.list_events(limit=100000, since=since, actor=actor)
     rows = [r for r in raw if r.get("occurred_at", 0) <= until]
 
-    # Aggregate.
-    groups: dict[tuple, int] = {}
-    for r in rows:
-        key_parts = []
-        for dim in group_by:
-            if dim == "actor":
-                key_parts.append(("actor", r.get("actor")))
-            elif dim == "action":
-                key_parts.append(("action", r.get("action")))
-            elif dim == "tool":
-                key_parts.append(("tool", r.get("tool")))
-            elif dim == "day":
-                ts = r.get("occurred_at") or 0
-                day = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
-                key_parts.append(("day", day))
-            else:
-                # Schema enum already prevents this, but be defensive.
-                fail(f"unknown group_by dimension: {dim}", group_by=group_by)
-        k = tuple(key_parts)
-        groups[k] = groups.get(k, 0) + 1
+    # §29.2 gap fix: empty group_by → no aggregation, groups stays [].
+    # Caller already gets total_events for the bare-total case.
+    if not group_by:
+        out_groups = []
+    else:
+        groups: dict[tuple, int] = {}
+        for r in rows:
+            key_parts = []
+            for dim in group_by:
+                if dim == "actor":
+                    key_parts.append(("actor", r.get("actor")))
+                elif dim == "action":
+                    key_parts.append(("action", r.get("action")))
+                elif dim == "tool":
+                    key_parts.append(("tool", r.get("tool")))
+                elif dim == "day":
+                    ts = r.get("occurred_at") or 0
+                    day = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+                    key_parts.append(("day", day))
+                else:
+                    # Schema enum already prevents this, but be defensive.
+                    fail(f"unknown group_by dimension: {dim}", group_by=group_by)
+            k = tuple(key_parts)
+            groups[k] = groups.get(k, 0) + 1
 
-    # Sort by count desc, then key asc for stable output.
-    sorted_groups = sorted(
-        groups.items(),
-        key=lambda kv: (-kv[1], tuple(str(v) for _, v in kv[0])),
-    )
+        # Sort by count desc, then key asc for stable output.
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda kv: (-kv[1], tuple(str(v) for _, v in kv[0])),
+        )
 
-    out_groups = [
-        {"key": {dim: val for dim, val in k}, "count": c}
-        for k, c in sorted_groups
-    ]
+        out_groups = [
+            {"key": {dim: val for dim, val in k}, "count": c}
+            for k, c in sorted_groups
+        ]
 
     response = {
         "ok": True,
