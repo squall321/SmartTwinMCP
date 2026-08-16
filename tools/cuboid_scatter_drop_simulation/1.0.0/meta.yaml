@@ -1,0 +1,77 @@
+name: cuboid_scatter_drop_simulation
+version: 1.0.0
+summary: 26방향(6F+12E+8C) 각 방향 주변 섭동 스캐터 낙하 DOE + 자동 후처리 (KooChainRun + KooD3plotReader).
+description: |
+  v1.0.0: cuboid_geometry(26 기준방향) + tolerance(방향마다 doe_count 샘플)로
+  **26방향 스캐터/섭동 낙하** 스터디를 prepare → submit 하고, 자동 KooD3plotReader
+  후처리(deep_report per case + sphere_report 통합)까지 트리거한다.
+
+  # 언제 호출하는가
+  - "26면 낙하 방향마다 ±2도 흔들어서 산포 보자", "각 방향 섭동 민감도"
+  - 방향 섭동에 대한 응답 견고성(robustness) 스터디 — 작은 방향 오차에 응답이 얼마나 요동치나
+  - 총 run = 기준방향수 × doe_count (전체 26 × 5 = 130). sphere_report 로 나온다.
+
+  # 다른 tool과 구분
+  - 구면 균등 N방향(섭동 아님) → `fullangle_drop_simulation` (fibonacci)
+  - 한 각도만 → `single_drop_simulation`
+  - raw .k 일반 잡 → `submit_lsdyna_job`
+
+  # 사전 조건
+  - `/data/SmartTwinPreprocessor/bin/KooChainRun`
+  - compute node `/opt/apptainers/SmartTwinPostprocessor.sif`
+  - `work_dir` + 모델 .k (또는 `model_file_path`)
+
+  # 동작 (4단계)
+  1. cuboid_geometry(기준방향) + tolerance(±tolerance_deg, doe_count, doe_type) scenario.json 생성
+  2. KooChainRun prepare → runner_config.json (doe_angles = 기준방향수 × doe_count, 방향마다 흩뿌림)
+  3. dry_run=true면 stop. false면 submit → Slurm jobs + sphere dependent job
+  4. jobs.db 기록
+
+  # 후속 분석 (DynaForge)
+  sphere_report.html 을 DynaForge 에 인제스트 → `report_scatter` 로 26방향으로 되묶어
+  방향별 산포(mean/std/CoV/최악)·민감도(가장 산포 큰 방향)를 본다.
+
+  # 반환
+  ```json
+  {"ok": true, "registry_id": 43, "work_dir": "...", "output_dir": ".../output",
+   "slurm_job_ids": [...], "sphere_job_id": "...", "n_bases": 26, "doe_count": 5,
+   "total_runs": 130, "status": "submitted"|"dry_run",
+   "sphere_report_path": ".../output/sphere_report.html"}
+  ```
+tags: [lsdyna, drop_test, simulation, slurm, koochainrun, cuboid, scatter, perturbation, sensitivity, postprocess, mode-own]
+aliases: [cuboid_scatter, scatter26, perturbation_drop, drop_26_scatter, 26방향_스캐터]
+transport:
+  kind: local
+  shell: /bin/bash
+  timeout_sec: 300
+expose: direct
+examples:
+  - title: 표준 26방향 × 5샘플 (dry_run)
+    args:
+      work_dir: /data/koopark/scatter26_test
+      model_file: MinimumModel.k
+      lstc_license_ip: 192.168.122.1
+      tolerance_deg: 2.0
+      doe_count: 5
+      dry_run: true
+  - title: 면만 6방향 × 10샘플 빠른 검증
+    args:
+      work_dir: /data/koopark/scatter_faces
+      model_file: MinimumModel.k
+      lstc_license_ip: 192.168.122.1
+      include_edges: false
+      include_corners: false
+      doe_count: 10
+      dry_run: true
+  - title: 실제 submit — 26 × 20샘플, separate_job
+    args:
+      work_dir: /data/koopark/production_scatter26
+      model_file_path: /home/koopark/models/my_part.k
+      lstc_license_ip: 192.168.122.1
+      tolerance_deg: 3.0
+      doe_count: 20
+      auto_deep_mode: separate_job
+      ncpu: 4
+      memory: 8G
+      time_limit: "24:00:00"
+      dry_run: false

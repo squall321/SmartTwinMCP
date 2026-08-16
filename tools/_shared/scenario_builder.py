@@ -217,6 +217,101 @@ def build_fullangle_scenario(
     return deep_merge(scenario, extra_overrides)
 
 
+def build_cuboid_scatter_scenario(
+    project_name: str,
+    base_dir: str,
+    model_file: str,
+    lstc_ip: str,
+    tol_deg: float = 2.0,
+    doe_count: int = 5,
+    doe_type: str = "lhs",
+    include_faces: bool = True,
+    include_edges: bool = True,
+    include_corners: bool = True,
+    height_mm: float = 1500,
+    t_final_s: float = 0.005,
+    ncpu: int = 2,
+    memory: str = "4G",
+    time_limit: str = "12:00:00",
+    drop_surface_type: str = "Plane",
+    enable_postprocess: bool = True,
+    auto_deep: bool = True,
+    auto_sphere: bool = True,
+    auto_deep_mode: str = "inline",
+    yield_stress_mpa: float = 350,
+    sif_path_postprocessor: str | None = None,
+    extra_overrides: dict | None = None,
+) -> dict:
+    """26방향(6F+12E+8C) 각각 주변을 tolerance 밴드로 흩뿌린 스캐터/섭동 낙하 DOE.
+
+    cuboid_geometry(기준 방향) + tolerance(방향마다 doe_count 샘플)를 조합한다. 결과는
+    기준방향당 doe_count run(총 n_bases×doe_count)이라 방향별 응답 산포/민감도를 볼 수 있다.
+    후처리 sphere_report 로 나오면 DynaForge report_scatter 가 26방향으로 되묶어 분석한다.
+    """
+    scenario = {
+        "project_name": project_name,
+        "base_dir": base_dir,
+        "environment": _base_environment(lstc_ip, ncpu, memory, time_limit),
+        "simulation_params": _base_simulation_params(height_mm, t_final_s,
+                                                     drop_surface_type=drop_surface_type),
+        "scenarios": [
+            {
+                "scenario_name": "Cuboid26_scatter",
+                "template": model_file,
+                "angle_source": {
+                    "source_type": "cuboid_geometry",
+                    "cuboid_geometry": {
+                        "include_faces": include_faces,
+                        "include_edges": include_edges,
+                        "include_corners": include_corners,
+                    },
+                },
+                "cumulative": {
+                    "num_steps": 1,
+                    "mode_sequence": ["DROP"],
+                    "base_angle_index": 0,
+                    "angle_mixing": {"strategy": "same_angle"},
+                },
+                "tolerance": {
+                    "roll": {"min": -abs(tol_deg), "max": abs(tol_deg)},
+                    "pitch": {"min": -abs(tol_deg), "max": abs(tol_deg)},
+                    "yaw": {"min": -abs(tol_deg), "max": abs(tol_deg)},
+                    "doe_type": doe_type,
+                    "doe_count": doe_count,
+                },
+            }
+        ],
+    }
+
+    if enable_postprocess:
+        pp = {
+            "enabled": True,
+            "auto_deep": auto_deep,
+            "auto_sphere": auto_sphere,
+            "yield_stress_mpa": yield_stress_mpa,
+            "section_view_axes": ["z"],
+            "section_view_fields": ["von_mises"],
+            "section_view_mode": "section",
+            "ua_threads": 4,
+            "sv_threads": 4,
+            "deep_timeout_seconds": 3600,
+            "sphere_time_limit": "04:00:00",
+        }
+        if auto_deep_mode == "separate_job":
+            pp["auto_deep_mode"] = "separate_job"
+        if sif_path_postprocessor:
+            pp["sif_path"] = sif_path_postprocessor
+        scenario["postprocess"] = pp
+
+    return deep_merge(scenario, extra_overrides)
+
+
+def cuboid_base_count(include_faces: bool = True, include_edges: bool = True,
+                      include_corners: bool = True) -> int:
+    """cuboid_geometry 기준 방향 수 (6F + 12E + 8C 중 선택 합)."""
+    return (6 if include_faces else 0) + (12 if include_edges else 0) + (8 if include_corners else 0)
+
+
 def write_scenario(scenario: dict, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
