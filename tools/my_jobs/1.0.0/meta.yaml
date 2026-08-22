@@ -50,9 +50,9 @@ description: |
   ```
 tags: [registry, jobs, multi-tenant, own, query, mode-own]
 transport:
-  # dev(같은 컴에 slurm)와 cae00(ssh stc→stcx)을 한 도구로. STMC_SLURM_SSH 가 비면
-  # 러너가 로컬 실행으로 폴백하고(§runner _run_ssh), 'stc' 면 그 ssh 별칭으로 원격 실행한다.
-  # user/key/port 는 ~/.ssh/config 의 별칭이 채운다 — 여기 하드코딩하지 않는다.
+  # dev(같은 컴에 slurm)와 cae00(ssh stc→헤드)을 한 도구로. STMC_SLURM_SSH 가 비면 러너가
+  # 로컬 폴백(_run_ssh), 'stc'면 그 ssh 별칭으로 헤드에서 실행. jobs.db 는 헤드에 있으므로
+  # 이 조회는 데이터가 있는 곳에서 돈다. user/key/port 는 ~/.ssh/config 별칭이 채운다.
   kind: ssh
   host: ${STMC_SLURM_SSH:-}
   env:

@@ -44,14 +44,14 @@ description: |
 tags: [logs, tail, slurm, jobs, debug, stdout, stderr, mode-own]
 aliases: [logs, tail_logs, slurm_logs]
 transport:
-  # dev(같은 컴에 slurm)와 cae00(ssh stc→stcx)을 한 도구로. STMC_SLURM_SSH 가 비면
-  # 러너가 로컬 실행으로 폴백하고(§runner _run_ssh), 'stc' 면 그 ssh 별칭으로 원격 실행한다.
-  # user/key/port 는 ~/.ssh/config 의 별칭이 채운다 — 여기 하드코딩하지 않는다.
+  # dev↔cae00 한 도구로. STMC_SLURM_SSH 비면 로컬 폴백, 'stc'면 헤드에서 실행.
+  # 로그 파일이 헤드의 work_dir 에 있으므로 이 도구가 거기서 돈다.
   kind: ssh
   host: ${STMC_SLURM_SSH:-}
   env:
     PATH: /usr/local/slurm/bin:/usr/local/bin:/usr/bin:/bin
     STMC_JOBS_DB: ${STMC_JOBS_DB:-/data/SmartTwinMCP/jobs.db}
+    STMC_AUDIT_DB: ${STMC_AUDIT_DB:-/data/SmartTwinMCP/audit.db}
   timeout_sec: 30
 expose: catalog
 examples:

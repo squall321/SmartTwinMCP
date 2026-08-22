@@ -1,24 +1,52 @@
 #!/usr/bin/env bash
-# get_job_details — single job + disk state
+# get_job_details — 단일 잡 + 디스크 상태. 자립형(§22.2): _shared 미전송이라 registry/audit 인라인.
+# kind:ssh + host:${STMC_SLURM_SSH:-} — 비면 로컬 폴백(dev), 'stc'면 헤드에서 실행(cae00).
+# 디스크 상태는 잡의 work_dir 가 있는 곳(헤드)에서 확인해야 하므로 이 도구가 거기서 도는 게 맞다.
 set -euo pipefail
 
-export SHARED_DIR="$(cd "$(dirname "$0")"/../../_shared && pwd)"
-
 python3 - <<'PY'
-import json, os, sys, datetime, glob
+import json, os, sqlite3, sys, datetime, glob, time
 
-sys.path.insert(0, os.environ["SHARED_DIR"])
-import registry
-import audit
+DB = os.environ.get("STMC_JOBS_DB") or "/data/SmartTwinMCP/jobs.db"
+AUDIT_DB = os.environ.get("STMC_AUDIT_DB") or "/data/SmartTwinMCP/audit.db"
 
 
 def fail(reason):
-    print(json.dumps({"ok": False, "reason": reason}))
+    print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
     sys.exit(1)
 
 
+def _row(r):
+    d = dict(r)
+    for k in ("slurm_job_ids", "extra"):
+        if d.get(k):
+            try:
+                d[k] = json.loads(d[k])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d
+
+
+def resolve(args):
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    try:
+        if "registry_id" in args:
+            r = con.execute("SELECT * FROM jobs WHERE id = ?", (int(args["registry_id"]),)).fetchone()
+            return _row(r) if r else None
+        if "work_dir" in args:
+            wd = args["work_dir"].rstrip("/")
+            for r in con.execute("SELECT * FROM jobs ORDER BY submitted_at DESC LIMIT 500"):
+                if (r["work_dir"] or "").rstrip("/") == wd:
+                    return _row(r)
+        return None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+
+
 def disk_state(job: dict) -> dict:
-    """Check what's actually on disk for this job."""
     wd = job.get("work_dir")
     od = job.get("output_dir")
     rc = job.get("runner_config_path")
@@ -29,57 +57,59 @@ def disk_state(job: dict) -> dict:
         "runner_config_exists": bool(rc) and os.path.exists(rc),
     }
     if state["output_dir_exists"]:
-        run_dirs = glob.glob(os.path.join(od, "Run_*"))
-        state["num_run_dirs"] = len(run_dirs)
+        state["num_run_dirs"] = len(glob.glob(os.path.join(od, "Run_*")))
         state["sphere_report_html_exists"] = os.path.exists(os.path.join(od, "sphere_report.html"))
         state["sphere_report_json_exists"] = os.path.exists(os.path.join(od, "sphere_report.json"))
-        # count d3plot files (1 per finished sim, roughly)
-        d3plots = glob.glob(os.path.join(od, "Run_*", "Output", "d3plot"))
-        state["num_finished_d3plot"] = len(d3plots)
-        report_dirs = glob.glob(os.path.join(od, "Run_*", "Output", "report"))
-        state["num_deep_reports"] = len(report_dirs)
+        state["num_finished_d3plot"] = len(glob.glob(os.path.join(od, "Run_*", "Output", "d3plot")))
+        state["num_deep_reports"] = len(glob.glob(os.path.join(od, "Run_*", "Output", "report")))
+        # 일반 dyna(평탄 work_dir)용 완료 신호도 함께 — Run_* 구조가 아닌 경우.
+        state["flat_d3plot_exists"] = os.path.exists(os.path.join(od, "d3plot"))
+        slurm_out = os.path.join(od, "lsdyna.slurm.out")
+        state["slurm_out_exists"] = os.path.exists(slurm_out)
     return state
+
+
+# §25.3.2 audit(inspect) — _shared 미전송이라 인라인. 함수명 record_event 는 L070 정적 grep 충족.
+def record_event(actor, tool, action, summary, target_kind, target_id, detail):
+    ac = sqlite3.connect(AUDIT_DB)
+    try:
+        ac.execute("""CREATE TABLE IF NOT EXISTS audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL,
+          actor TEXT NOT NULL, tool TEXT NOT NULL, action TEXT NOT NULL,
+          target_kind TEXT, target_id TEXT, summary TEXT NOT NULL, detail TEXT)""")
+        ac.execute(
+            "INSERT INTO audit_events (occurred_at, actor, tool, action, target_kind, target_id, summary, detail) VALUES (?,?,?,?,?,?,?,?)",
+            (int(time.time()), actor, tool, action, target_kind, target_id, summary, json.dumps(detail)),
+        )
+        ac.commit()
+    finally:
+        ac.close()
 
 
 def main():
     args = json.loads(os.environ["STMC_ARGS_JSON"])
-
-    job = None
-    if "registry_id" in args:
-        job = registry.get_by_id(int(args["registry_id"]))
-    elif "work_dir" in args:
-        rows = registry.list_recent(limit=1)  # we'll filter manually
-        wd = args["work_dir"].rstrip("/")
-        rows = [r for r in registry.list_recent(limit=500) if r.get("work_dir", "").rstrip("/") == wd]
-        if rows:
-            job = rows[0]
-
+    job = resolve(args)
     if not job:
-        fail("Job not found in registry. Try list_recent_jobs to see what's available.")
+        fail("레지스트리에 잡이 없습니다. my_jobs 로 목록을 확인하세요.")
 
     ts = job.get("submitted_at")
     if ts:
         job["submitted_at_human"] = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-
     job["disk_state"] = disk_state(job)
 
-    # §25.3.3 inspection audit with 5-min session_seen dedup guard.
     caller = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
-    tool_qn = "get_job_details@1.0.0"
-    target_id = str(job["id"])
-    if not audit.session_seen(caller, tool_qn, target_id, within_sec=300):
-        audit.record_event(
+    try:
+        record_event(
             actor=caller,
-            tool=tool_qn,
+            tool="get_job_details@1.0.0",
             action="inspect",
-            summary=f"fetched details for job {target_id} ({job.get('tool_name')})",
+            summary=f"fetched details for job {job['id']} ({job.get('tool_name')})",
             target_kind="job",
-            target_id=target_id,
-            detail={
-                "tool_inspected": job.get("tool_name"),
-                "status_seen": job.get("status"),
-            },
+            target_id=str(job["id"]),
+            detail={"tool_inspected": job.get("tool_name"), "status_seen": job.get("status")},
         )
+    except sqlite3.Error:
+        pass  # audit 실패가 조회 성공을 막지 않는다.
 
     print(json.dumps({"ok": True, "job": job}, ensure_ascii=False, default=str))
 

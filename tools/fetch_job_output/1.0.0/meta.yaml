@@ -54,14 +54,8 @@ description: |
 tags: [download, results, rsync, fetch, mode-own]
 aliases: [download_job_output, pull_job_output]
 transport:
-  # dev(같은 컴에 slurm)와 cae00(ssh stc→stcx)을 한 도구로. STMC_SLURM_SSH 가 비면
-  # 러너가 로컬 실행으로 폴백하고(§runner _run_ssh), 'stc' 면 그 ssh 별칭으로 원격 실행한다.
-  # user/key/port 는 ~/.ssh/config 의 별칭이 채운다 — 여기 하드코딩하지 않는다.
-  kind: ssh
-  host: ${STMC_SLURM_SSH:-}
-  env:
-    PATH: /usr/local/slurm/bin:/usr/local/bin:/usr/bin:/bin
-    STMC_JOBS_DB: ${STMC_JOBS_DB:-/data/SmartTwinMCP/jobs.db}
+  kind: local
+  shell: /bin/bash
   timeout_sec: 3600
 expose: catalog
 examples:
