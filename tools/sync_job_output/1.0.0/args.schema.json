@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sync_job_output args",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "registry_id": {
+      "type": "integer",
+      "description": "jobs.db 레지스트리 id (submit 이 반환). 이 잡의 work_dir 를 찾는다."
+    },
+    "dest": {
+      "type": "string",
+      "description": "동기화 받을 로컬 폴더. 비우면 STMC_SYNC_DIR/<registry_id> (기본 /data/SmartTwinMCP/sync)."
+    },
+    "patterns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "가져올 파일 글롭. 비우면 LS-DYNA 진행 파일 기본셋(glstat·messag·d3hsp·*.out 등)."
+    },
+    "full": {
+      "type": "boolean",
+      "default": false,
+      "description": "true 면 d3plot 등 대용량 결과까지 전부. 기본은 진행 모니터링용 경량 파일만."
+    }
+  },
+  "required": ["registry_id"]
+}

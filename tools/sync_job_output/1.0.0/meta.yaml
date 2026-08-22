@@ -1,0 +1,38 @@
+name: sync_job_output
+version: 1.0.0
+summary: 실행 중인 잡의 중간 결과를 로컬로 증분 동기화(rsync pull). 진행 모니터링용.
+description: |
+  잡이 도는 동안 work_dir 의 현재 상태(glstat·messag·d3hsp·*.out 등 진행 파일)를
+  이 MCP 호스트로 당겨온다. 완료를 기다리지 않고 중간중간 결과를 받아 보기 위한 도구다.
+
+  방향은 **당기기(pull)** 다 — 헤드노드는 cae00 를 못 봐도 되고(단방향 ssh 전제),
+  cae00 가 rsync 로 stc:work_dir 를 가져온다. dev(로컬 slurm)에서는 같은 파일시스템이라
+  로컬 복사한다. STMC_SLURM_SSH 로 전환한다(빈값=로컬, "stc"=원격 pull).
+
+  # 언제
+  - "돌고 있는 잡 결과 지금까지 것 좀 받아줘", "glstat 진행 보자"
+  - 완료 전 중간 상태(에너지·타임스텝·경고)를 모니터링
+
+  # 반환
+  - synced 파일 목록·크기, dest 경로, 잡 상태(있으면). 실패는 ok=false + reason.
+
+  # full=false(기본)이 가져오는 것
+  - glstat, messag, d3hsp, *.out, *.log, bg_switch, status.out — 경량 진행 파일.
+  - full=true 면 d3plot* 바이너리까지(대용량, 완료 후 회수에 가깝다).
+tags: [job, results, sync, monitoring, rsync, smarttwincluster, mode-read-all]
+transport:
+  # 이 도구는 **당기는 쪽(MCP 호스트=cae00/dev)** 에서 돈다 — 슬럼 호스트가 아니다.
+  # 그래서 local 트랜스포트다. 스크립트가 STMC_SLURM_SSH 로 원격/로컬을 분기한다.
+  kind: local
+  shell: /bin/bash
+  env:
+    STMC_JOBS_DB: ${STMC_JOBS_DB:-/data/SmartTwinMCP/jobs.db}
+    STMC_SLURM_SSH: ${STMC_SLURM_SSH:-}
+    STMC_SYNC_DIR: ${STMC_SYNC_DIR:-/data/SmartTwinMCP/sync}
+  timeout_sec: 900
+expose: catalog
+examples:
+  - title: 진행 파일만 동기화
+    args: {registry_id: 42}
+  - title: 완료 후 전체 결과
+    args: {registry_id: 42, full: true}
