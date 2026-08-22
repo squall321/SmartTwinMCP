@@ -61,7 +61,12 @@ def _try_parse_json(s: str) -> Any | None:
 
 def _run_local(entry: ToolEntry, args: dict, t: LocalTransport) -> RunResult:
     args_json = json.dumps(args, ensure_ascii=False)
-    env = {**os.environ, **t.env, "STMC_ARGS_JSON": args_json}
+    # env 값의 ${VAR}/${VAR:-default} 를 프로세스 env 로 확장한다 — ssh 트랜스포트와 동일.
+    # 이걸 안 하면 meta 의 ${STMC_SLURM_SSH:-} 가 리터럴 그대로 들어가 스크립트 분기가 깨진다.
+    rendered = {}
+    for k, v in t.env.items():
+        rendered[k], _ = _interpolate_env(v, os.environ)
+    env = {**os.environ, **rendered, "STMC_ARGS_JSON": args_json}
     cmd = [t.shell, str(entry.script_path)]
     try:
         proc = subprocess.run(
@@ -108,6 +113,15 @@ def _run_ssh(entry: ToolEntry, args: dict, t: SshTransport) -> RunResult:
     proc_env = os.environ
 
     rendered_host, miss_host = _interpolate_env(t.host, proc_env)
+    # ⚠ 배포 이식성의 링치핀. host 가 비면(예: ${STMC_SLURM_SSH:-} 미설정) slurm 이 이 머신에
+    # 로컬로 있다는 뜻이므로 로컬 실행으로 위임한다. dev(같은 컴에 slurm)와 cae00(ssh stc 로
+    # 헤드노드)을 **같은 도구·같은 스크립트**로 돌리는 방법 — 도구 meta 는 ssh 로 두고
+    # STMC_SLURM_SSH 하나로 전환한다(빈값=로컬, "stc"=원격). ssh config 별칭이 user/key/port 를
+    # 채우므로 도구에 그것들을 하드코딩하지 않는다.
+    if not rendered_host.strip():
+        local = LocalTransport(env=dict(t.env), timeout_sec=t.timeout_sec,
+                               cwd=t.remote_cwd or None)
+        return _run_local(entry, args, local)
     rendered_user, miss_user = _interpolate_env(t.user, proc_env) if t.user else ("", [])
     rendered_key, miss_key = _interpolate_env(t.key_path, proc_env) if t.key_path else ("", [])
     rendered_cwd, miss_cwd = _interpolate_env(t.remote_cwd, proc_env) if t.remote_cwd else ("", [])
