@@ -7,9 +7,13 @@
 # directly with sqlite3.
 set -euo pipefail
 
-# Probe the shared mount on the remote (§22.7). Fail clearly if not present.
-if [ ! -d /data/SmartTwinMCP ]; then
-  python3 -c 'import json; print(json.dumps({"ok": False, "tool": "submit_lsdyna_remote", "reason": "/data/SmartTwinMCP not mounted on remote head — shared filesystem missing or wrong host", "remote_host": __import__("socket").gethostname()}))'
+# 레지스트리 DB 디렉터리를 확보한다. 종전엔 /data/SmartTwinMCP 하드코딩이라 그 마운트가
+# 없는 곳(dev 로컬 slurm)에서 무조건 실패했다. STMC_JOBS_DB(트랜스포트 env 로 주입) 부모를
+# 쓰고 없으면 만든다 — dev(로컬 경로)·cae00(공유 마운트) 양쪽에서 동작한다.
+STMC_JOBS_DB="${STMC_JOBS_DB:-/data/SmartTwinMCP/jobs.db}"
+_DBDIR="$(dirname "$STMC_JOBS_DB")"
+if ! mkdir -p "$_DBDIR" 2>/dev/null; then
+  python3 -c 'import json,os,socket; print(json.dumps({"ok": False, "tool": "submit_lsdyna_remote", "reason": f"레지스트리 디렉터리를 만들 수 없습니다: {os.environ.get(\"STMC_JOBS_DB\")} — 경로·권한 확인", "remote_host": socket.gethostname()}))'
   exit 1
 fi
 
