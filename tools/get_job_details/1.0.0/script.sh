@@ -5,7 +5,7 @@
 set -euo pipefail
 
 python3 - <<'PY'
-import json, os, sqlite3, sys, datetime, glob, time
+import json, os, sqlite3, sys, datetime, glob, time, subprocess
 
 DB = os.environ.get("STMC_JOBS_DB") or "/data/SmartTwinMCP/jobs.db"
 AUDIT_DB = os.environ.get("STMC_AUDIT_DB") or "/data/SmartTwinMCP/audit.db"
@@ -44,6 +44,32 @@ def resolve(args):
         return None
     finally:
         con.close()
+
+
+def slurm_live(slurm_job_ids):
+    """squeue 로 현재 slurm 상태를 조회한다(헤드에서 실행). 큐에 없으면 종료/미존재로 본다.
+    레지스트리 status 는 제출 시점 값이라 갱신되지 않으므로, 살아있는 상태는 여기서 본다."""
+    ids = [str(s) for s in (slurm_job_ids or [])]
+    if not ids:
+        return {"queried": False, "reason": "no slurm_job_ids"}
+    try:
+        r = subprocess.run(["squeue", "-h", "-o", "%i %T %M %R", "-j", ",".join(ids)],
+                           capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return {"queried": False, "reason": "squeue not on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"queried": False, "reason": "squeue timed out"}
+    states = {}
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) >= 2:
+            states[parts[0]] = {"state": parts[1],
+                                "elapsed": parts[2] if len(parts) > 2 else None,
+                                "reason": parts[3] if len(parts) > 3 else None}
+    in_queue = [i for i in ids if i in states]
+    gone = [i for i in ids if i not in states]
+    return {"queried": True, "in_queue": states, "finished_or_absent": gone,
+            "any_active": bool(in_queue)}
 
 
 def disk_state(job: dict) -> dict:
@@ -96,6 +122,7 @@ def main():
     if ts:
         job["submitted_at_human"] = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     job["disk_state"] = disk_state(job)
+    job["slurm_live"] = slurm_live(job.get("slurm_job_ids"))
 
     caller = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
     try:
